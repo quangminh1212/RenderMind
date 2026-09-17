@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  rendermind:
+    build: .
+    container_name: rendermind
+    ports:
+      - '3000:3000'
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - rendermind
+
+  redis:
+    image: redis:7-alpine
+    container_name: rendermind-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - rendermind
+
+volumes:
+  redis-data:
+
+networks:
+  rendermind:
+    driver: bridge
