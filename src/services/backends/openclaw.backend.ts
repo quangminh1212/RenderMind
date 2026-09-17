@@ -26,7 +26,7 @@ export class OpenAIBackend extends BaseBackend {
     // DALL-E 3 only supports specific sizes
     const size = this.getValidSize(options.width, options.height);
 
-    const response = await fetch('https://api.openclaw.com/v1/images/generations', {
+    const response = await fetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

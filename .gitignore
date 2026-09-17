@@ -30,3 +30,4 @@ coverage/
 # Temp
 tmp/
 temp/
+.claude/
