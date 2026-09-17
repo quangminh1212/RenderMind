@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { cacheService } from '../services/cache.service';
 import { queueService } from '../services/queue.service';
+import { backendService } from '../services/backend.service';
 
 const router = Router();
 
@@ -10,7 +11,7 @@ const router = Router();
  *   get:
  *     tags: [Info]
  *     summary: Health check
- *     description: Returns server health status and dependency info
+ *     description: Returns server health status, dependency info, and backend availability
  *     responses:
  *       200:
  *         description: Server is healthy
@@ -20,6 +21,8 @@ const router = Router();
 router.get('/', (_req: Request, res: Response) => {
   const redis = cacheService.isConnected();
   const queue = queueService.isAvailable();
+  const backends = backendService.getBackends();
+  const availableBackends = backends.filter((b) => b.status === 'available').length;
 
   const healthy = true; // Server is always healthy if it responds
   const status = healthy ? 'ok' : 'degraded';
@@ -32,6 +35,18 @@ router.get('/', (_req: Request, res: Response) => {
     dependencies: {
       redis: redis ? 'connected' : 'disconnected',
       queue: queue ? 'available' : 'unavailable',
+    },
+    backends: {
+      total: backends.length,
+      available: availableBackends,
+      details: backends.map((b) => ({
+        name: b.name,
+        status: b.status,
+      })),
+    },
+    memory: {
+      rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      heap_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
     },
   });
 });

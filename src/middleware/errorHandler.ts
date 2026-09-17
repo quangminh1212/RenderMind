@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { ApiError } from '../types/api.types';
 import { logger } from '../utils/logger';
+import { getConfig } from '../config';
 
 export class AppError extends Error {
   public readonly statusCode: number;
@@ -17,6 +18,10 @@ export class AppError extends Error {
 }
 
 export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
+  const config = getConfig();
+  const isProduction = config.server.nodeEnv === 'production';
+  const requestId = req.headers['x-request-id'] as string;
+
   // Zod validation error
   if (err instanceof ZodError) {
     const response: ApiError = {
@@ -29,7 +34,7 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
       })),
     };
 
-    logger.warn('Validation error', { path: req.path, details: response.details });
+    logger.warn('Validation error', { path: req.path, requestId, details: response.details });
     res.status(400).json(response);
     return;
   }
@@ -43,23 +48,26 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
     };
 
     if (err.statusCode >= 500) {
-      logger.error('Server error', { path: req.path, error: err.message });
+      logger.error('Server error', { path: req.path, requestId, error: err.message });
     } else {
-      logger.warn('Client error', { path: req.path, error: err.message });
+      logger.warn('Client error', { path: req.path, requestId, error: err.message });
     }
 
     res.status(err.statusCode).json(response);
     return;
   }
 
-  // Unknown error
-  logger.error('Unhandled error', { path: req.path, error: err.message, stack: err.stack });
+  // Unknown error — never leak internals in production
+  logger.error('Unhandled error', {
+    path: req.path,
+    requestId,
+    error: err.message,
+    stack: err.stack,
+  });
 
   const response: ApiError = {
     error: 'INTERNAL_ERROR',
-    message: process.env.NODE_ENV === 'production'
-      ? 'An unexpected error occurred'
-      : err.message,
+    message: isProduction ? 'An unexpected error occurred' : err.message,
     statusCode: 500,
   };
 

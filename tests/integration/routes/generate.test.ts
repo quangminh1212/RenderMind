@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 
-// Mock config
 vi.mock('../../../src/config', () => ({
   getConfig: vi.fn(() => ({
     server: { port: 3000, host: '0.0.0.0', nodeEnv: 'test' },
+    auth: { apiKeyHeader: 'x-api-key', apiKeys: [], enabled: false },
+    cors: { origins: ['*'] },
     backends: {
       stability: { enabled: false, apiKey: '', apiHost: '' },
       openclaw: { enabled: false, apiKey: '' },
@@ -25,6 +26,7 @@ vi.mock('../../../src/services/cache.service', () => ({
     disconnect: vi.fn(),
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn(),
+    del: vi.fn(),
     isConnected: vi.fn().mockReturnValue(false),
   },
 }));
@@ -47,9 +49,7 @@ describe('Generate API', () => {
   });
 
   it('POST /api/v1/generate should return 400 without prompt', async () => {
-    const response = await request(app)
-      .post('/api/v1/generate')
-      .send({});
+    const response = await request(app).post('/api/v1/generate').send({});
 
     expect(response.status).toBe(400);
     expect(response.body.error).toBe('VALIDATION_ERROR');
@@ -64,7 +64,6 @@ describe('Generate API', () => {
         height: 512,
       });
 
-    // Should return 200 (or failed since no backend is configured)
     expect(response.status).toBe(200);
     expect(response.body).toHaveProperty('id');
     expect(response.body).toHaveProperty('status');
@@ -75,22 +74,20 @@ describe('Generate API', () => {
       .post('/api/v1/generate')
       .send({
         prompt: 'test',
-        width: 10, // too small
+        width: 10,
       });
 
     expect(response.status).toBe(400);
   });
 
   it('GET /api/v1/status/:id should return 404 for unknown id', async () => {
-    const response = await request(app)
-      .get('/api/v1/status/gen_unknown123');
+    const response = await request(app).get('/api/v1/status/gen_unknown123');
 
     expect(response.status).toBe(404);
   });
 
   it('GET /api/v1/backends should list backends', async () => {
-    const response = await request(app)
-      .get('/api/v1/backends');
+    const response = await request(app).get('/api/v1/backends');
 
     expect(response.status).toBe(200);
     expect(response.body.backends).toBeDefined();

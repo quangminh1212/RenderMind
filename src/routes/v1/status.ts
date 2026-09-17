@@ -24,10 +24,10 @@ const router = Router();
  *       404:
  *         description: Generation not found
  */
-router.get('/:id', (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const result = backendService.getStatus(id);
+    const result = await backendService.getStatus(id);
 
     if (!result) {
       throw new AppError('Generation not found', 404);

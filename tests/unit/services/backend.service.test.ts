@@ -4,6 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../../src/config', () => ({
   getConfig: vi.fn(() => ({
     server: { port: 3000, host: '0.0.0.0', nodeEnv: 'test' },
+    auth: { apiKeyHeader: 'x-api-key', apiKeys: [], enabled: false },
+    cors: { origins: ['*'] },
     backends: {
       stability: { enabled: false, apiKey: '', apiHost: '' },
       openclaw: { enabled: false, apiKey: '' },
@@ -21,13 +23,24 @@ vi.mock('../../../src/services/cache.service', () => ({
   cacheService: {
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue(undefined),
+    del: vi.fn().mockResolvedValue(undefined),
     isConnected: vi.fn().mockReturnValue(false),
+    connect: vi.fn().mockResolvedValue(undefined),
+    disconnect: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
 vi.mock('../../../src/services/webhook.service', () => ({
   webhookService: {
     deliver: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+vi.mock('../../../src/services/queue.service', () => ({
+  queueService: {
+    connect: vi.fn().mockResolvedValue(undefined),
+    disconnect: vi.fn().mockResolvedValue(undefined),
+    isAvailable: vi.fn().mockReturnValue(false),
   },
 }));
 
@@ -58,8 +71,8 @@ describe('BackendService', () => {
   });
 
   describe('getStatus', () => {
-    it('should return null for non-existent id', () => {
-      const result = service.getStatus('gen_nonexistent');
+    it('should return null for non-existent id', async () => {
+      const result = await service.getStatus('gen_nonexistent');
       expect(result).toBeNull();
     });
   });

@@ -1,10 +1,16 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Request, Response, NextFunction } from 'express';
 import { errorHandler, AppError } from '../../../src/middleware/errorHandler';
-import { ZodError } from 'zod';
+import { getConfig } from '../../../src/config';
+
+vi.mock('../../../src/config', () => ({
+  getConfig: vi.fn(() => ({
+    server: { nodeEnv: 'test' },
+  })),
+}));
 
 describe('errorHandler', () => {
-  const mockReq = { path: '/test' } as Request;
+  const mockReq = { path: '/test', headers: {} } as Request;
   const mockRes = {
     status: vi.fn().mockReturnThis(),
     json: vi.fn(),
@@ -13,6 +19,7 @@ describe('errorHandler', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    (getConfig as ReturnType<typeof vi.fn>).mockReturnValue({ server: { nodeEnv: 'test' } });
   });
 
   it('should handle AppError with correct status code', () => {
@@ -41,6 +48,21 @@ describe('errorHandler', () => {
       }),
     );
   });
+
+  it('should mask error message in production', () => {
+    (getConfig as ReturnType<typeof vi.fn>).mockReturnValue({
+      server: { nodeEnv: 'production' },
+    });
+
+    const error = new Error('Sensitive internal error');
+    errorHandler(error, mockReq, mockRes, mockNext);
+
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'An unexpected error occurred',
+      }),
+    );
+  });
 });
 
 describe('AppError', () => {
@@ -49,6 +71,7 @@ describe('AppError', () => {
     expect(error.message).toBe('Test error');
     expect(error.statusCode).toBe(400);
     expect(error.isOperational).toBe(true);
+    expect(error.name).toBe('AppError');
   });
 
   it('should default to 500 status code', () => {

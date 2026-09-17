@@ -1,11 +1,12 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 
-// Mock config
 vi.mock('../../../src/config', () => ({
   getConfig: vi.fn(() => ({
     server: { port: 3000, host: '0.0.0.0', nodeEnv: 'test' },
+    auth: { apiKeyHeader: 'x-api-key', apiKeys: [], enabled: false },
+    cors: { origins: ['*'] },
     backends: {
       stability: { enabled: false, apiKey: '', apiHost: '' },
       openclaw: { enabled: false, apiKey: '' },
@@ -25,6 +26,7 @@ vi.mock('../../../src/services/cache.service', () => ({
     disconnect: vi.fn(),
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn(),
+    del: vi.fn(),
     isConnected: vi.fn().mockReturnValue(false),
   },
 }));
@@ -58,5 +60,18 @@ describe('Health API', () => {
     const response = await request(app).get('/health');
     expect(response.body.dependencies).toBeDefined();
     expect(response.body.dependencies.redis).toBe('disconnected');
+  });
+
+  it('GET /health should include memory info', async () => {
+    const response = await request(app).get('/health');
+    expect(response.body.memory).toBeDefined();
+    expect(response.body.memory.rss_mb).toBeGreaterThan(0);
+  });
+
+  it('GET /health should include backend info', async () => {
+    const response = await request(app).get('/health');
+    expect(response.body.backends).toBeDefined();
+    expect(response.body.backends.total).toBe(3);
+    expect(response.body.backends.available).toBe(0);
   });
 });

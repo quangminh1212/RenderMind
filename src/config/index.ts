@@ -4,6 +4,14 @@ export interface AppConfig {
     host: string;
     nodeEnv: string;
   };
+  auth: {
+    apiKeyHeader: string;
+    apiKeys: string[];
+    enabled: boolean;
+  };
+  cors: {
+    origins: string[];
+  };
   rateLimit: {
     windowMs: number;
     maxRequests: number;
@@ -50,12 +58,30 @@ function getEnvNumber(key: string, defaultValue: number): number {
   return value ? parseInt(value, 10) : defaultValue;
 }
 
+function getEnvList(key: string, defaultValue: string = ''): string[] {
+  const value = process.env[key] || defaultValue;
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function loadConfig(): AppConfig {
+  const apiKeys = getEnvList('API_KEYS');
+
   return {
     server: {
       port: getEnvNumber('PORT', 3000),
       host: getEnv('HOST', '0.0.0.0'),
       nodeEnv: getEnv('NODE_ENV', 'development'),
+    },
+    auth: {
+      apiKeyHeader: getEnv('API_KEY_HEADER', 'x-api-key'),
+      apiKeys,
+      enabled: apiKeys.length > 0,
+    },
+    cors: {
+      origins: getEnvList('CORS_ORIGINS', '*'),
     },
     rateLimit: {
       windowMs: getEnvNumber('RATE_LIMIT_WINDOW_MS', 60000),
@@ -98,4 +124,8 @@ export function getConfig(): AppConfig {
     _config = loadConfig();
   }
   return _config;
+}
+
+export function resetConfig(): void {
+  _config = null;
 }
