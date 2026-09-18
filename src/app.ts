@@ -29,9 +29,7 @@ export function createApp(): express.Application {
   // ─── CORS ─────────────────────────────────────────────────
   app.use(
     cors({
-      origin: config.cors.origins.includes('*')
-        ? '*'
-        : config.cors.origins,
+      origin: config.cors.origins.includes('*') ? '*' : config.cors.origins,
       methods: ['GET', 'POST', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
       maxAge: 86400,
@@ -51,10 +49,20 @@ export function createApp(): express.Application {
   // ─── API Key Authentication ───────────────────────────────
   app.use(apiKeyAuth);
 
+  // ─── Attach API key to request for rate limiter ───────────
+  app.use((req, _res, next) => {
+    const apiKeyHeader = config.auth.apiKeyHeader;
+    if (apiKeyHeader) {
+      (req as any).rateLimitKeyHeader = apiKeyHeader;
+    }
+    next();
+  });
+
   // ─── Request ID ───────────────────────────────────────────
   app.use((req, _res, next) => {
     req.headers['x-request-id'] =
-      req.headers['x-request-id'] as string || `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      (req.headers['x-request-id'] as string) ||
+      `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     next();
   });
 
@@ -96,11 +104,20 @@ export function createApp(): express.Application {
             type: 'object',
             required: ['prompt'],
             properties: {
-              prompt: { type: 'string', minLength: 1, maxLength: 4000, example: 'A futuristic city at sunset' },
+              prompt: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 4000,
+                example: 'A futuristic city at sunset',
+              },
               negative_prompt: { type: 'string', maxLength: 4000 },
               width: { type: 'integer', minimum: 64, maximum: 4096, default: 1024 },
               height: { type: 'integer', minimum: 64, maximum: 4096, default: 1024 },
-              backend: { type: 'string', enum: ['auto', 'stability', 'openclaw', 'replicate', 'custom'], default: 'auto' },
+              backend: {
+                type: 'string',
+                enum: ['auto', 'stability', 'openclaw', 'replicate', 'custom'],
+                default: 'auto',
+              },
               steps: { type: 'integer', minimum: 1, maximum: 150, default: 30 },
               cfg_scale: { type: 'number', minimum: 1, maximum: 30, default: 7.5 },
               seed: { type: 'integer', minimum: 0 },

@@ -14,9 +14,13 @@ export function createRateLimiter() {
       statusCode: 429,
     },
     keyGenerator: (req) => {
-      const forwarded = req.headers['x-forwarded-for'];
-      const ip = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-      return req.ip || ip || 'unknown';
+      // Prefer API key for stable rate limiting, fall back to IP
+      const apiKeyHeader = (req as any).rateLimitKeyHeader as string | undefined;
+      if (apiKeyHeader) {
+        const apiKey = req.headers[apiKeyHeader.toLowerCase()];
+        if (apiKey) return `key:${apiKey}`;
+      }
+      return req.ip || 'unknown';
     },
   });
 }

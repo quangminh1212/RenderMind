@@ -64,7 +64,10 @@ export class CacheService {
         await this.client.setex(key, this.ttl, serialized);
       }
     } catch (error) {
-      logger.warn('Cache set failed', { key, error: error instanceof Error ? error.message : String(error) });
+      logger.warn('Cache set failed', {
+        key,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

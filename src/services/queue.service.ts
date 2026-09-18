@@ -1,9 +1,8 @@
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { getConfig } from '../config';
 import { logger } from '../utils/logger';
-import { GenerateRequest, GenerateResponse } from '../types/api.types';
-import { generateId } from '../utils/idGenerator';
+import { GenerateRequest } from '../types/api.types';
 
 export interface QueueJobData {
   id: string;

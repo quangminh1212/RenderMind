@@ -30,10 +30,11 @@ export const BatchRequestSchema = z.object({
     .object({
       width: z.number().int().min(64).max(4096).default(1024),
       height: z.number().int().min(64).max(4096).default(1024),
-      backend: z
-        .enum(['auto', 'stability', 'openclaw', 'replicate', 'custom'])
-        .default('auto'),
+      backend: z.enum(['auto', 'stability', 'openclaw', 'replicate', 'custom']).default('auto'),
       parallel: z.number().int().min(1).max(10).default(3).describe('Max parallel generations'),
+      steps: z.number().int().min(1).max(150).default(30).describe('Number of inference steps'),
+      cfg_scale: z.number().min(1).max(30).default(7.5).describe('Classifier-free guidance scale'),
+      seed: z.number().int().min(0).optional().describe('Random seed for reproducibility'),
     })
     .default({}),
 });

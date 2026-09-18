@@ -51,49 +51,54 @@ const router = Router();
  *       400:
  *         description: Validation error
  */
-router.post('/', validate(BatchRequestSchema), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { prompts, options } = req.body;
-    const batchId = generateId('batch');
+router.post(
+  '/',
+  validate(BatchRequestSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { prompts, options } = req.body;
+      const batchId = generateId('batch');
 
-    const results: GenerateResponse[] = [];
-    const parallel = options.parallel || 3;
+      const results: GenerateResponse[] = [];
+      const parallel = options.parallel || 3;
 
-    // Process in chunks
-    for (let i = 0; i < prompts.length; i += parallel) {
-      const chunk = prompts.slice(i, i + parallel);
-      const chunkResults = await Promise.all(
-        chunk.map((prompt: string) =>
-          backendService.generate({
-            prompt,
-            width: options.width,
-            height: options.height,
-            backend: options.backend,
-            steps: 30,
-            cfg_scale: 7.5,
-          }),
-        ),
-      );
-      results.push(...chunkResults);
+      // Process in chunks
+      for (let i = 0; i < prompts.length; i += parallel) {
+        const chunk = prompts.slice(i, i + parallel);
+        const chunkResults = await Promise.all(
+          chunk.map((prompt: string) =>
+            backendService.generate({
+              prompt,
+              width: options.width,
+              height: options.height,
+              backend: options.backend,
+              steps: options.steps,
+              cfg_scale: options.cfg_scale,
+              seed: options.seed,
+            }),
+          ),
+        );
+        results.push(...chunkResults);
+      }
+
+      const completed = results.filter((r) => r.status === 'completed').length;
+      const failed = results.filter((r) => r.status === 'failed').length;
+
+      const response: BatchResponse = {
+        id: batchId,
+        status: completed === results.length ? 'completed' : failed > 0 ? 'failed' : 'completed',
+        total: results.length,
+        completed,
+        failed,
+        results,
+        created_at: new Date().toISOString(),
+      };
+
+      res.json(response);
+    } catch (error) {
+      next(error);
     }
-
-    const completed = results.filter((r) => r.status === 'completed').length;
-    const failed = results.filter((r) => r.status === 'failed').length;
-
-    const response: BatchResponse = {
-      id: batchId,
-      status: completed === results.length ? 'completed' : failed > 0 ? 'failed' : 'completed',
-      total: results.length,
-      completed,
-      failed,
-      results,
-      created_at: new Date().toISOString(),
-    };
-
-    res.json(response);
-  } catch (error) {
-    next(error);
-  }
-});
+  },
+);
 
 export default router;

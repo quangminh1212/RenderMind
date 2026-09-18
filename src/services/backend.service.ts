@@ -1,4 +1,4 @@
-import { ImageGenerationOptions, ImageGenerationResult } from '../types/backend.types';
+import { ImageGenerationOptions } from '../types/backend.types';
 import { GenerateRequest, GenerateResponse, BackendInfo } from '../types/api.types';
 import { BaseBackend } from './backends/base.backend';
 import { StabilityBackend } from './backends/stability.backend';
@@ -180,7 +180,7 @@ export class BackendService {
         name: 'stability',
         display_name: 'Stable Diffusion',
         status: this.backends.has('stability') ? 'available' : 'unavailable',
-        models: ['stable-diffusion-xl-1024-v1-0', 'stable-diffusion-v1-6'],
+        models: ['stable-diffusion-xl-1024-v1-0', 'stable-diffusion-v1-6', 'stable-image-ultra-v1'],
       },
       {
         name: 'openclaw',
@@ -203,7 +203,7 @@ export class BackendService {
     await cacheService.set(`${GENERATION_STORE_PREFIX}${id}`, data, GENERATION_STORE_TTL);
   }
 
-  private selectBackend(preferred: string, model?: string): BaseBackend | null {
+  private selectBackend(preferred: string, _model?: string): BaseBackend | null {
     if (preferred !== 'auto') {
       return this.backends.get(preferred) || null;
     }

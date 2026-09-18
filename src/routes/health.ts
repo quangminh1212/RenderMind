@@ -24,10 +24,15 @@ router.get('/', (_req: Request, res: Response) => {
   const backends = backendService.getBackends();
   const availableBackends = backends.filter((b) => b.status === 'available').length;
 
-  const healthy = true; // Server is always healthy if it responds
-  const status = healthy ? 'ok' : 'degraded';
+  // Liveness: process is alive → always 200
+  const alive = true;
 
-  res.status(healthy ? 200 : 503).json({
+  // Readiness: dependencies must be reachable and at least one backend available
+  const ready = redis && queue && availableBackends > 0;
+
+  const status = ready ? 'ok' : 'degraded';
+
+  res.status(alive ? (ready ? 200 : 503) : 503).json({
     status,
     version: process.env.npm_package_version || '1.0.0',
     uptime: Math.floor(process.uptime()),

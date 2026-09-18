@@ -42,7 +42,7 @@ const router = Router();
  *                 default: 1024
  *               backend:
  *                 type: string
- *                 enum: [auto, stability, openai, replicate, custom]
+ *                 enum: [auto, stability, openclaw, replicate, custom]
  *                 default: auto
  *               steps:
  *                 type: integer
@@ -79,13 +79,17 @@ const router = Router();
  *       500:
  *         description: Internal server error
  */
-router.post('/', validate(GenerateRequestSchema), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const result = await backendService.generate(req.body);
-    res.json(result);
-  } catch (error) {
-    next(error);
-  }
-});
+router.post(
+  '/',
+  validate(GenerateRequestSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await backendService.generate(req.body);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 export default router;

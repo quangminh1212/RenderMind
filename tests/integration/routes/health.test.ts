@@ -48,10 +48,10 @@ describe('Health API', () => {
     app = createApp();
   });
 
-  it('GET /health should return 200', async () => {
+  it('GET /health should return 503 when deps are down', async () => {
     const response = await request(app).get('/health');
-    expect(response.status).toBe(200);
-    expect(response.body.status).toBe('ok');
+    expect(response.status).toBe(503);
+    expect(response.body.status).toBe('degraded');
     expect(response.body).toHaveProperty('version');
     expect(response.body).toHaveProperty('uptime');
   });

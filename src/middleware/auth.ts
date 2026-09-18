@@ -11,7 +11,7 @@ export function apiKeyAuth(req: Request, res: Response, next: NextFunction): voi
     return next();
   }
 
-  if (EXEMPT_PATHS.some((p) => req.path.startsWith(p))) {
+  if (EXEMPT_PATHS.some((p) => req.path === p)) {
     return next();
   }
 

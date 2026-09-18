@@ -46,7 +46,7 @@ export interface AppConfig {
 }
 
 function getEnv(key: string, defaultValue?: string): string {
-  const value = process.env[key] || defaultValue;
+  const value = process.env[key] ?? defaultValue;
   if (value === undefined) {
     throw new Error(`Missing required environment variable: ${key}`);
   }

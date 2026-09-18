@@ -47,6 +47,7 @@ export class CustomBackend extends BaseBackend {
     const response = await fetch(this.config.url, {
       method: 'POST',
       headers,
+      signal: AbortSignal.timeout(60000),
       body: JSON.stringify(body),
     });
 

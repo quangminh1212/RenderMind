@@ -30,6 +30,7 @@ export class ReplicateBackend extends BaseBackend {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiToken}`,
       },
+      signal: AbortSignal.timeout(60000),
       body: JSON.stringify({
         version: model,
         input: {
@@ -50,11 +51,15 @@ export class ReplicateBackend extends BaseBackend {
     }
 
     const prediction = (await createResponse.json()) as { id: string; status: string };
-    const result = await this.pollPrediction(prediction.id);
+    const result = await this.pollPrediction(prediction.id, model);
     return result;
   }
 
-  private async pollPrediction(id: string, maxAttempts = 60): Promise<ImageGenerationResult> {
+  private async pollPrediction(
+    id: string,
+    model: string,
+    maxAttempts = 60,
+  ): Promise<ImageGenerationResult> {
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
@@ -62,6 +67,7 @@ export class ReplicateBackend extends BaseBackend {
         headers: {
           Authorization: `Bearer ${this.apiToken}`,
         },
+        signal: AbortSignal.timeout(15000),
       });
 
       if (!response.ok) {
@@ -75,14 +81,12 @@ export class ReplicateBackend extends BaseBackend {
       };
 
       if (prediction.status === 'succeeded') {
-        const output = Array.isArray(prediction.output)
-          ? prediction.output[0]
-          : prediction.output;
+        const output = Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
         return {
           image_url: output,
           metadata: {
             backend: this.name,
-            model: 'replicate',
+            model,
             generation_time_ms: 0,
           },
         };
