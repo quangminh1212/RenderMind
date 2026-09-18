@@ -6,23 +6,26 @@ on:
   pull_request:
     branches: [master, main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         node-version: [20, 22]
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -33,22 +36,96 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+      - name: Format check
+        run: npm run format:check
+
+      - name: Audit runtime dependencies
+        # Runtime dependencies must be clean. Dev-toolchain advisories are reported
+        # separately so they cannot block a release but also cannot be ignored.
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage
+        if: matrix.node-version == 20
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
 
       - name: Build
         run: npm run build
+
+  # Exercises the cache and generation-record paths against a real Redis, which the
+  # unit suites deliberately mock away.
+  integration-redis:
+    runs-on: ubuntu-latest
+    needs: test
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests against a live Redis
+        run: npm test
+        env:
+          REDIS_URL: redis://localhost:6379
 
   docker:
     runs-on: ubuntu-latest
     needs: test
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build Docker image
+      - name: Build image
         run: docker build -t rendermind:test .
 
-      - name: Verify Docker image
-        run: docker run --rm rendermind:test node -e "console.log('OK')"
+      - name: Start container
+        run: |
+          docker run -d --name rendermind-smoke -p 3000:3000 \
+            -e NODE_ENV=development rendermind:test
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/healthz > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "service did not become live"
+          docker logs rendermind-smoke
+          exit 1
+        # A container that boots but never serves is not a working artifact, so this
+        # probes liveness rather than merely asserting the process started.
+
+      - name: Run the end-to-end suite against the container
+        run: RENDERMIND_URL=http://localhost:3000 npm run test:e2e
+
+      - name: Container health status
+        run: test "$(docker inspect --format '{{.State.Health.Status}}' rendermind-smoke)" = "healthy"
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs rendermind-smoke
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f rendermind-smoke

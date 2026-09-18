@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   rendermind:
     build: .
@@ -8,18 +6,32 @@ services:
       - '3000:3000'
     env_file:
       - .env
+    environment:
+      # Compose networking resolves the service name, so this overrides the default.
+      REDIS_URL: redis://redis:6379
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     networks:
       - rendermind
 
   redis:
     image: redis:7-alpine
     container_name: rendermind-redis
-    ports:
-      - '6379:6379'
+    # Not published to the host: Redis is an internal cache, not a public service.
+    expose:
+      - '6379'
     volumes:
       - redis-data:/data
     healthcheck:

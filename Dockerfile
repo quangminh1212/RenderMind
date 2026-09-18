@@ -1,47 +1,51 @@
-# ─── Build Stage ─────────────────────────────────────────────
+# --- Build stage ----------------------------------------------
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
 COPY package.json package-lock.json* ./
-RUN npm ci --ignore-scripts
+RUN npm ci
 
-# Copy source and build
 COPY tsconfig.json tsconfig.build.json ./
 COPY src/ ./src/
 RUN npm run build
 
-# Remove dev dependencies
-RUN npm prune --production
+# Run the test suite in the builder, where dev dependencies still exist. The
+# runtime image ships no test files, so running them there would silently find
+# zero tests and report success.
+COPY tests/ ./tests/
+RUN npm test
 
-# ─── Production Stage ───────────────────────────────────────
+# --- Production dependencies ----------------------------------
+FROM node:20-alpine AS deps
+
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+# --- Production stage -----------------------------------------
 FROM node:20-alpine AS production
 
-# Security: run as non-root
-RUN addgroup -g 1001 -S rendermind && \
-    adduser -S rendermind -u 1001 -G rendermind
+# Security: run as a non-root user.
+RUN addgroup -g 1001 -S rendermind \
+    && adduser -S rendermind -u 1001 -G rendermind
 
 WORKDIR /app
 
-# Copy built artifacts
+COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+COPY package.json ./
 
-# Set environment
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health || exit 1
+# Liveness only. Readiness (/readyz) depends on provider configuration and must
+# not gate the container's own health, or a Redis-less deployment gets restarted.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# Expose port
 EXPOSE 3000
 
-# Switch to non-root user
 USER rendermind
 
-# Start
 CMD ["node", "dist/index.js"]
