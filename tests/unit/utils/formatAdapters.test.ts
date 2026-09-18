@@ -235,3 +235,18 @@ describe('error envelopes', () => {
     expect(toOpenAIError('x', 400).error.type).toBe('invalid_request_error');
   });
 });
+
+describe('status mapping for upstream failures', () => {
+  it('maps an upstream transport failure to api_error, not a bare 500', () => {
+    // A ProviderError with no HTTP status means DNS/socket/timeout: the upstream is at
+    // fault, so this must not be reported as a 500 from our own server.
+    expect(anthropicErrorTypeFor(502)).toBe('api_error');
+    expect(anthropicErrorTypeFor(500)).toBe('api_error');
+    expect(anthropicErrorTypeFor(529)).toBe('overloaded_error');
+  });
+
+  it('keeps a caller-attributable failure as invalid_request_error', () => {
+    expect(anthropicErrorTypeFor(400)).toBe('invalid_request_error');
+    expect(anthropicErrorTypeFor(404)).toBe('not_found_error');
+  });
+});

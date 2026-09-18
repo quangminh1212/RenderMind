@@ -211,3 +211,70 @@ import { logger } from '@/utils/logger';
 ## Questions?
 
 Feel free to open an issue for any questions about contributing!
+
+## Adding a provider
+
+A provider is an outbound adapter to one image service. The rule that keeps this codebase
+maintainable is that providers know nothing about protocols or adapters. A provider
+receives a canonical request and returns a canonical result.
+
+1. Implement ImageProvider from src/providers/provider.interface.ts.
+2. Declare an accurate CapabilityDescriptor. Accuracy matters more than optimism: an
+   over-claiming descriptor produces requests the provider cannot honour, whereas an
+   under-claiming one only makes the matcher avoid it.
+3. Throw ProviderError on failure with the upstream status preserved, so the engine can
+   classify retryability. A bare Error is treated as retryable and loses that detail.
+4. Register it in ProviderRegistry.fromConfig.
+5. Add unit tests under tests/unit/providers/ that stub fetch and assert both the outgoing
+   payload and the error classification.
+
+## Adding a protocol adapter
+
+An adapter translates one wire format into the canonical model. It contains no business
+logic and must never import a provider.
+
+Two rules are not negotiable:
+
+- **Return the protocol's own error envelope.** A bridge returning the native shape is
+  unusable by the SDKs it claims to support. Route errors through the adapter's error
+  builder, and add an integration test asserting the envelope for both a validation
+  failure and an auth failure.
+- **Do not silently degrade.** If you cannot honour something (streaming, a requested
+  response format, a requested size), either implement it or fail with an error that names
+  it. Never return a successful response whose shape differs from what was requested.
+
+## Contract tests
+
+`openai` and `@anthropic-ai/sdk` are development dependencies, and the test suite drives
+them against the bridges with an overridden base URL. This is what makes the compatibility
+claim meaningful: asserting shapes we invented proves nothing, while a real SDK parsing a
+real response proves the contract.
+
+When you change a bridge response, run the contract tests. If a real SDK rejects the
+change, the change is wrong.
+
+## Before opening a pull request
+
+Run the full gate:
+
+    npm run verify
+
+That runs typecheck, lint and the test suite. Then, if your change touches a response
+shape:
+
+    npm run test:coverage   # must meet the engine and provider thresholds
+
+For a change to a protocol bridge, start the server and run the end-to-end suite:
+
+    npm run dev
+    RENDERMIND_URL=http://localhost:3000 npm run test:e2e
+
+## Coding standards
+
+- TypeScript strict mode. Avoid `any`; if it is unavoidable, keep it local and comment on
+  why.
+- Comments explain why, not what. A comment restating the code is noise; one explaining a
+  non-obvious decision or a constraint is valuable.
+- No silent fallbacks. If a value cannot be produced, fail with an error naming it rather
+  than substituting something else.
+- Every bug fix gets a regression test that fails without the fix.

@@ -2,17 +2,14 @@
 
 # RenderMind
 
-**AI Text-to-Image API Proxy**
+**An image generation engine for AI coding tools**
 
-A unified REST API that orchestrates multiple image generation backends (Stable Diffusion, DALL-E 3, Flux) behind a single, consistent interface.
+Give any AI coding agent, SDK, or chat client the ability to generate images.
 
 [![CI](https://github.com/quangminh1212/RenderMind/actions/workflows/ci.yml/badge.svg)](https://github.com/quangminh1212/RenderMind/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-
-[Getting Started](#-quick-start) · [API Reference](#-api-reference) · [Backends](#-supported-backends) · [Contributing](#-contributing)
 
 </div>
 
@@ -20,325 +17,235 @@ A unified REST API that orchestrates multiple image generation backends (Stable 
 
 ## What is RenderMind?
 
-RenderMind acts as a smart middleware layer that takes text prompts from your application and transforms them into stunning images by orchestrating multiple image generation backends. Instead of integrating with one specific image API, RenderMind provides a **unified interface** that abstracts away the complexity.
+Claude Code, Cursor, Continue, LiteLLM and Open WebUI can all call an API to generate
+images. RenderMind is the service on the other end of that call.
 
-### Why RenderMind?
+It speaks two protocols that AI tooling already uses, and routes the request to whichever
+image provider you have configured:
 
-- **One API, many backends** — Switch between Stable Diffusion, DALL-E 3, and Flux without changing your client code
-- **Smart routing** — Automatically selects the best backend based on prompt type and availability
-- **Production-ready** — Rate limiting, caching, queue system, webhook callbacks, and monitoring out of the box
-- **Type-safe** — Built with TypeScript and Zod validation for reliable request/response contracts
+| Surface | Speaks | Use it when |
+|---|---|---|
+| `POST /v1/images/generations` | openclaw Images API | Your tool already calls the openclaw image API |
+| `POST /v1/messages` | Anthropic Messages API | Your tool calls Claude and needs image output |
+| `POST /api/v1/generate` | RenderMind native | You want the full feature set directly |
 
-## Architecture
+Point a client at RenderMind instead of the upstream, and it works without code changes.
 
-```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Your App   │────▶│   RenderMind     │────▶│  Image Backends │
-│  (Client)   │◀────│   (Proxy)        │◀────│  (SD/DALL-E/…)  │
-└─────────────┘     │                  │     └─────────────────┘
-                    │  ┌────────────┐  │
-                    │  │   Redis    │  │
-                    │  │ (Cache/Q)  │  │
-                    │  └────────────┘  │
-                    └──────────────────┘
-```
+## Why it exists
 
-## Features
+A coding agent that needs an image has no standard way to ask for one. RenderMind closes
+that gap by acting as the translation layer between the protocols agents speak and the
+providers that actually make images.
 
-| Feature | Description |
-|---------|-------------|
-| **Unified API** | Single RESTful endpoint for text-to-image generation |
-| **Multi-Backend** | Connect to Stable Diffusion, DALL-E 3, Flux, or custom HTTP endpoints |
-| **Smart Routing** | Auto-select the best backend based on prompt type and availability |
-| **Batch Processing** | Generate up to 20 images in parallel with configurable concurrency |
-| **Caching** | Avoid redundant generations with Redis-backed prompt caching |
-| **Queue System** | Handle high-throughput with BullMQ job queuing |
-| **Webhook Callbacks** | Get notified when async generations complete (with HMAC signatures) |
-| **Rate Limiting** | Protect upstream APIs with configurable rate limits |
-| **API Documentation** | Interactive Swagger UI at `/docs` |
-| **Docker Ready** | Multi-stage Dockerfile with Redis in docker-compose |
+Three properties matter more than feature count here:
 
-## Quick Start
+- **Capability negotiation.** Providers declare what they can do. The engine decides
+  before dispatching, and reports any adaptation it makes rather than hiding it.
+- **Honest errors.** A client mistake is a 4xx. An upstream failure is a 5xx. A requested
+  response format is never silently substituted for a different one.
+- **Protocol fidelity.** Each surface returns that protocol's own error envelope, so real
+  SDKs parse failures instead of throwing on an unrecognised shape.
 
-### Prerequisites
+## Supported providers
 
-- **Node.js** >= 20.0.0
-- **npm** >= 10.0.0
-- **Redis** (optional, for caching and queue)
+| Provider | Service | Credential |
+|---|---|---|
+| openclaw | Any openclaw-compatible image API (api.openai.com, Azure, LM Studio, LocalAI) | `OPENAI_API_KEY` |
+| stability | Stability AI (Stable Diffusion) | `STABILITY_API_KEY` |
+| replicate | Replicate (Flux) | `REPLICATE_API_TOKEN` |
+| custom | Your own HTTP endpoint | `CUSTOM_BACKENDS` |
 
-### Installation
+"openclaw" names the protocol this provider speaks, not a vendor. See
+[docs/providers.md](docs/providers.md).
 
-```bash
-# Clone the repository
-git clone https://github.com/quangminh1212/RenderMind.git
-cd RenderMind
+## Quick start
 
-# Install dependencies
-npm install
+### Docker
 
-# Configure environment
-cp .env.example .env
-# Edit .env with your API keys (at least one backend)
+    git clone https://github.com/quangminh1212/RenderMind.git
+    cd RenderMind
+    cp .env.example .env    # then add at least one provider key
+    docker compose up
 
-# Start development server
-npm run dev
-```
+### Local
 
-The server starts at `http://localhost:3000`. API documentation is available at `http://localhost:3000/docs`.
+    npm install
+    cp .env.example .env
+    npm run dev
 
-### Using Docker
+The service listens on port 3000. Verify it:
 
-```bash
-# Build and start with Redis
-docker-compose up -d
+    curl http://localhost:3000/healthz   # liveness, always 200
+    curl http://localhost:3000/readyz    # readiness, 200 when a provider is configured
 
-# Check logs
-docker-compose logs -f rendermind
-```
+### Generate an image
 
-## API Reference
+openclaw-compatible:
 
-### Generate Image
+    curl -X POST http://localhost:3000/v1/images/generations \
+      -H 'Content-Type: application/json' \
+      -H 'Authorization: Bearer <your RenderMind key>' \
+      -d '{"prompt":"a red apple on a wooden table","size":"1024x1024"}'
 
-```http
-POST /api/v1/generate
-Content-Type: application/json
-```
+Anthropic-compatible:
 
-**Request Body:**
+    curl -X POST http://localhost:3000/v1/messages \
+      -H 'Content-Type: application/json' \
+      -H 'x-api-key: <your RenderMind key>' \
+      -d '{
+        "model":"claude-3-5-sonnet",
+        "max_tokens":1024,
+        "messages":[{"role":"user","content":"Generate an image of a mountain lake at dawn"}]
+      }'
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `prompt` | string | ✅ | — | Text prompt (1-4000 chars) |
-| `negative_prompt` | string | ❌ | — | Things to avoid (max 4000 chars) |
-| `width` | integer | ❌ | `1024` | Image width (64-4096) |
-| `height` | integer | ❌ | `1024` | Image height (64-4096) |
-| `backend` | string | ❌ | `"auto"` | `"auto"`, `"stability"`, `"openclaw"`, `"replicate"` |
-| `steps` | integer | ❌ | `30` | Inference steps (1-150) |
-| `cfg_scale` | number | ❌ | `7.5` | Guidance scale (1-30) |
-| `seed` | integer | ❌ | — | Random seed for reproducibility |
-| `model` | string | ❌ | — | Specific model within the backend |
-| `webhook_url` | string | ❌ | — | URL for completion webhook |
+Native:
 
-**Example:**
+    curl -X POST http://localhost:3000/api/v1/generate \
+      -H 'Content-Type: application/json' \
+      -d '{"prompt":"a red apple","count":2,"response_format":"url"}'
 
-```bash
-curl -X POST http://localhost:3000/api/v1/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "A futuristic city at sunset, cyberpunk style",
-    "negative_prompt": "blurry, low quality",
-    "width": 1024,
-    "height": 1024,
-    "backend": "auto"
-  }'
-```
+## Using it from a coding agent
 
-**Response:**
+Any client that supports a custom base URL works:
 
-```json
-{
-  "id": "gen_a1b2c3d4e5f6",
-  "status": "completed",
-  "image_url": "https://...",
-  "metadata": {
-    "backend": "stability",
-    "model": "stable-diffusion-xl-1024-v1-0",
-    "generation_time_ms": 3200,
-    "cached": false
-  },
-  "created_at": "2025-01-01T00:00:00.000Z"
-}
-```
+    import Anthropic from '@anthropic-ai/sdk';
 
-### Batch Generate
+    const client = new Anthropic({
+      baseURL: 'http://localhost:3000',
+      apiKey: process.env.RENDERMIND_KEY,
+    });
 
-```http
-POST /api/v1/batch
-Content-Type: application/json
-```
+    const message = await client.messages.create({
+      model: 'claude-3-5-sonnet',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'Draw a mountain lake at dawn' }],
+    });
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `prompts` | string[] | ✅ | Array of prompts (1-20) |
-| `options.width` | integer | ❌ | Image width (default: 1024) |
-| `options.height` | integer | ❌ | Image height (default: 1024) |
-| `options.backend` | string | ❌ | Backend to use (default: "auto") |
-| `options.parallel` | integer | ❌ | Max parallel (1-10, default: 3) |
+    // The image arrives as a tool_use block for the generate_image tool.
+    const toolUse = message.content.find((b) => b.type === 'tool_use');
+    console.log(toolUse.input.images[0].url);
 
-### Get Status
+The `generate_image` tool contract is discoverable at `GET /v1/messages/tools`.
 
-```http
-GET /api/v1/status/:id
-```
+## Endpoints
 
-### List Backends
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/v1/images/generations` | openclaw-compatible image generation |
+| GET | `/v1/models` | Model discovery for LiteLLM, Open WebUI, Continue |
+| POST | `/v1/messages` | Anthropic-compatible image generation |
+| POST | `/v1/messages/count_tokens` | Token estimate (called by Claude Code) |
+| GET | `/v1/messages/tools` | The `generate_image` tool declaration |
+| POST | `/api/v1/generate` | Native generation |
+| POST | `/api/v1/batch` | Native batch generation |
+| GET | `/api/v1/status/:id` | Generation status and result |
+| GET | `/api/v1/backends` | Provider capabilities |
+| GET | `/healthz` `/readyz` `/health` | Liveness, readiness, alias |
+| GET | `/metrics` | Prometheus metrics |
+| GET | `/docs` | OpenAPI documentation (non-production) |
 
-```http
-GET /api/v1/backends
-```
+## Authentication
 
-### Health Check
+Set `API_KEYS` to a comma-separated list. Every endpoint except the health probes, `/docs`
+and `/api/v1/backends` then requires a key.
 
-```http
-GET /health
-```
+The key may be presented in any of these forms:
 
-## Supported Backends
+    x-api-key: <key>
+    Authorization: Bearer <key>
 
-| Backend | Status | Models | Configuration |
-|---------|--------|--------|---------------|
-| **openclaw-compatible** | ✅ Ready | dall-e-3, gpt-image-1, any | `OPENAI_API_KEY` + `OPENAI_BASE_URL` |
-| **Stable Diffusion** | ✅ Ready | SD XL 1.0, SD 1.6, SD Ultra | `STABILITY_API_KEY` |
-| **Flux** | ✅ Ready | flux-1.1-pro, flux-schnell | `REPLICATE_API_TOKEN` |
-| **Custom HTTP** | ✅ Ready | Any | `CUSTOM_BACKENDS` env |
+Comparison is constant-time. An invalid key returns 401.
 
-## 🔌 Protocol Bridge (any model → images)
-
-RenderMind doubles as a **protocol bridge**: any client or model that speaks the
-openclaw **or** Anthropic protocol can hit RenderMind and have the request
-translated into a real image-generation call against your configured backend.
-
-| Endpoint | Protocol | Behaviour |
-|----------|----------|-----------|
-| `POST /v1/images/generations` | openclaw | Drop-in openclaw image API. Accepts `prompt`, `model`, `size`, `n`, `response_format`, … |
-| `POST /v1/messages` | Anthropic (Claude) | Accepts a Claude Messages request; the prompt is turned into an image and returned as an Anthropic `message` with an `image` content block. |
-| `POST /api/v1/generate` | RenderMind native | The original unified endpoint. |
-
-### Example — openclaw client
-
-```bash
-curl -X POST http://localhost:3000/v1/images/generations \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"a red apple on a table","model":"dall-e-3","size":"1024x1024"}'
-```
-
-### Example — Claude/Anthropic client
-
-```bash
-curl -X POST http://localhost:3000/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"claude-3-5-sonnet",
-    "max_tokens":1024,
-    "messages":[{"role":"user","content":"Generate an image of a mountain lake at dawn"}]
-  }'
-```
-
-Response:
-
-```json
-{
-  "id": "msg_…",
-  "type": "message",
-  "role": "assistant",
-  "content": [
-    { "type": "text", "text": "Generated an image for \"…\"." },
-    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "…" } }
-  ],
-  "stop_reason": "end_turn"
-}
-```
-
-To point the bridge at **your own** image API, just set `OPENAI_BASE_URL` to any
-endpoint that implements `POST {base}/images/generations` — openclaw, Azure
-openclaw, LM Studio, LocalAI, or a custom image service. `OPENAI_IMAGE_MODEL`
-sets the default model name sent to that endpoint.
+**In production the server refuses to start without `API_KEYS`** unless you set
+`ALLOW_UNAUTHENTICATED=true`. An unset variable silently producing an open proxy that
+spends your provider credits is the failure mode this prevents.
 
 ## Configuration
 
-All configuration is done via environment variables. See [`.env.example`](.env.example) for the full list.
+All configuration is environment variables; see [.env.example](.env.example) for the
+annotated list. Invalid values are a startup error naming each offending variable, rather
+than a confusing runtime failure.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | Server port |
-| `HOST` | `0.0.0.0` | Server host |
-| `NODE_ENV` | `development` | Environment mode |
-| `STABILITY_API_KEY` | — | Stability AI API key |
-| `OPENAI_API_KEY` | — | OpenAI API key |
-| `REPLICATE_API_TOKEN` | — | Replicate API token |
-| `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
-| `CACHE_TTL` | `3600` | Cache TTL in seconds |
-| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (ms) |
-| `RATE_LIMIT_MAX_REQUESTS` | `60` | Max requests per window |
-| `QUEUE_CONCURRENCY` | `5` | Queue worker concurrency |
-| `WEBHOOK_SECRET` | — | HMAC secret for webhook signatures |
+Key variables:
 
-## Tech Stack
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | 3000 | Listen port |
+| `NODE_ENV` | development | Set to `production` for strict mode |
+| `API_KEYS` | none | Required in production |
+| `CORS_ORIGINS` | `*` outside production | Allowed origins |
+| `REDIS_URL` | redis://localhost:6379 | Optional cache and record store |
+| `MAX_GENERATION_CONCURRENCY` | 10 | Global cap on concurrent upstream calls |
+| `OPENAI_API_KEY` | none | Enables the openclaw provider |
+| `OPENAI_BASE_URL` | api.openai.com/v1 | Point at any compatible endpoint |
+| `STABILITY_API_KEY` | none | Enables Stability |
+| `REPLICATE_API_TOKEN` | none | Enables Replicate |
+| `CUSTOM_BACKENDS` | none | JSON array of custom HTTP providers |
+| `ANTHROPIC_IMAGE_BLOCK_MODE` | off | Set to `extension` for an image content block |
 
-- **Runtime:** [Node.js](https://nodejs.org) 20+
-- **Language:** [TypeScript](https://www.typescriptlang.org) 5.x (strict mode)
-- **Framework:** [Express](https://expressjs.com) 4.x
-- **Validation:** [Zod](https://zod.dev)
-- **Cache:** [ioredis](https://github.com/redis/ioredis) (Redis)
-- **Queue:** [BullMQ](https://docs.bullmq.io)
-- **Docs:** [Swagger UI](https://swagger.io/tools/swagger-ui) (OpenAPI 3.0)
-- **Testing:** [Vitest](https://vitest.dev)
-- **Linting:** [ESLint](https://eslint.org) + [Prettier](https://prettier.io)
+## Architecture
+
+    adapters/          protocol in:  translate a wire format into the canonical model
+      openai/          openclaw Images API surface
+      anthropic/       Anthropic Messages surface, including SSE
+    engine/            the canonical core
+      capability.matcher    decides what can serve a request, and how
+      generation.service    plan-driven dispatch, concurrency, failover
+      generation.repository generation state machine and records
+      errors                typed errors preserving upstream detail
+    providers/         protocol out: talk to one image service
+    platform/          artifact store, HTTP resilience, metrics
+
+The dependency direction is one-way: **adapters -> engine -> providers**. Adapters never
+import providers and providers never import adapters. A provider knows only the canonical
+request and result, which is what lets "Anthropic in, ComfyUI out" work without
+cross-contamination.
+
+`docs/providers.md` explains capability negotiation in detail. `docs/caching.md` covers the
+cache key and the generation state machine.
 
 ## Development
 
-```bash
-npm run dev          # Start with hot reload
-npm test             # Run tests
-npm run test:watch   # Run tests in watch mode
-npm run test:coverage # Run with coverage report
-npm run lint         # Lint source files
-npm run lint:fix     # Auto-fix lint issues
-npm run typecheck    # Type check without emitting
-npm run build        # Build for production
-```
+    npm run dev            # watch mode
+    npm test               # unit and integration tests
+    npm run test:coverage  # with coverage thresholds
+    npm run test:e2e       # end-to-end against a running server
+    npm run typecheck
+    npm run lint
+    npm run verify         # typecheck + lint + test
 
-## Project Structure
+201 tests cover the engine, the providers, both protocol bridges and the HTTP surface,
+including contract tests that drive the real openclaw and Anthropic SDKs against the
+bridges.
 
-```
-src/
-├── index.ts                 # Entry point & server startup
-├── app.ts                   # Express app configuration
-├── config/                  # Environment & backend config
-├── middleware/               # Error handling, validation, rate limiting
-├── routes/                  # API route handlers
-│   └── v1/                  # Versioned API endpoints
-├── services/                # Business logic & backend orchestrator
-│   └── backends/            # Backend implementations
-├── types/                   # TypeScript type definitions
-└── utils/                   # Logger, ID generator, helpers
-```
+## Documentation
 
-## Roadmap
+| Document | Contents |
+|---|---|
+| [docs/providers.md](docs/providers.md) | Capability negotiation, ranking, adding a provider |
+| [docs/protocols/openai-images.md](docs/protocols/openai-images.md) | openclaw bridge: fields, guarantees, divergences |
+| [docs/protocols/anthropic-messages.md](docs/protocols/anthropic-messages.md) | Anthropic bridge: the tool_use contract, SSE, divergences |
+| [docs/error-taxonomy.md](docs/error-taxonomy.md) | Every error envelope and status decision |
+| [docs/caching.md](docs/caching.md) | Cache key design, three-state reads, state machine |
+| [SECURITY.md](SECURITY.md) | Threat model, controls, honest limitations |
 
-- [x] Core API proxy
-- [x] Multi-backend routing
-- [x] Request validation & error handling
-- [x] Redis caching
-- [x] Rate limiting
-- [x] Webhook callbacks
-- [x] OpenAPI documentation
-- [x] Docker deployment
-- [x] CI/CD pipeline
-- [ ] Web UI for prompt testing
-- [ ] Style presets library
-- [ ] Image-to-image support
-- [ ] Inpainting endpoint
-- [ ] Admin dashboard
-- [ ] Image storage (S3/GCS)
-- [ ] Authentication & API keys
-- [ ] Usage analytics
+## Known limitations
 
-## Contributing
+These are stated plainly because a proxy that overstates its compatibility is worse than
+one that documents its gaps.
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+- **`/v1/images/edits` and `/v1/images/variations` are not implemented.** They return a
+  404 in the protocol envelope, so a client fails predictably rather than silently.
+- **Anthropic image output is a `tool_use` block, not an image block.** The Anthropic
+  response ContentBlock union has no `image` member, so an image block would break strict
+  clients. `ANTHROPIC_IMAGE_BLOCK_MODE=extension` opts in for custom clients.
+- **Anthropic `usage` figures are estimates** from character counts, not metered tokens.
+- **The SSRF filter does not resolve DNS.** A hostname resolving to a link-local address
+  passes it. Treat webhook URLs as trusted input.
+- **Provider behaviour is verified against stubbed responses, not live paid APIs.** The
+  Replicate model-reference path in particular was corrected against the documented API
+  shape but not confirmed with a live token.
 
 ## License
 
-[MIT](LICENSE) © 2025 RenderMind Contributors
-
----
-
-<div align="center">
-
-**Built with care by the community.**
-
-Star this repo if you find it useful!
-
-</div>
+MIT. See [LICENSE](LICENSE).

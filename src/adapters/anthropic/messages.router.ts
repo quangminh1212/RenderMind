@@ -61,12 +61,17 @@ function sendAnthropicError(res: Response, error: unknown, req: Request): void {
 
   if (error instanceof ProviderError) {
     // Preserve meaningful upstream semantics rather than flattening everything to 500.
+    //
+    // The distinction that matters: a failure originating upstream is a 502, not a 500.
+    // Returning 500 told the caller our server was broken, which sent them to the wrong
+    // place when the real problem was an unreachable or misbehaving provider.
     let status: number;
     if (error.status === 429) status = 429;
     else if (error.status === 529) status = 529;
     else if (error.isClientError) status = 400;
     else if (error.status === 504) status = 504;
-    else status = 500;
+    // No status means a transport failure (DNS, socket, timeout): upstream is at fault.
+    else status = 502;
 
     if (error.retryAfterSeconds !== undefined) {
       res.setHeader('Retry-After', String(error.retryAfterSeconds));
