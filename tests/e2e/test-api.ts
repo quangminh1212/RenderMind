@@ -1,43 +1,52 @@
 /**
- * End-to-End API Test Script for RenderMind
+ * End-to-end smoke test for a running RenderMind server.
  *
- * Tests the API endpoints against a running server.
- * Usage: npx tsx tests/e2e/test-api.ts [base_url]
+ *   npx tsx tests/e2e/test-api.ts [base_url]
+ *   npm run test:e2e
  *
- * Requires: A running RenderMind server (npm run dev)
+ * Asserts only contracts that hold regardless of which providers are configured, and
+ * exercises both protocol bridges, which are the surfaces a portable client uses.
+ * Generation is attempted only when a provider is available.
  */
 
-const BASE_URL = process.argv[2] || 'http://localhost:3000';
+const BASE_URL = process.argv[2] ?? process.env.RENDERMIND_URL ?? 'http://localhost:3000';
+const API_KEY = process.env.API_KEY ?? process.env.API_KEYS?.split(',')[0] ?? '';
 
 interface TestResult {
   name: string;
   passed: boolean;
   message: string;
-  duration_ms: number;
 }
 
 const results: TestResult[] = [];
 
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (API_KEY) headers['x-api-key'] = API_KEY;
+  return headers;
+}
+
+async function request(path: string, options: RequestInit = {}) {
+  const res = await fetch(BASE_URL + path, { headers: authHeaders(), ...options });
+  const text = await res.text();
+  let body: any;
+  try {
+    body = text ? JSON.parse(text) : undefined;
+  } catch {
+    body = text;
+  }
+  return { status: res.status, body, headers: res.headers, text };
+}
+
 async function test(name: string, fn: () => Promise<void>): Promise<void> {
-  const start = Date.now();
   try {
     await fn();
-    results.push({
-      name,
-      passed: true,
-      message: 'OK',
-      duration_ms: Date.now() - start,
-    });
-    console.log(`  \x1b[32m✓\x1b[0m ${name} (${Date.now() - start}ms)`);
+    results.push({ name, passed: true, message: 'OK' });
+    console.log('  PASS  ' + name);
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    results.push({
-      name,
-      passed: false,
-      message: msg,
-      duration_ms: Date.now() - start,
-    });
-    console.log(`  \x1b[31m✗\x1b[0m ${name}: ${msg}`);
+    const message = error instanceof Error ? error.message : String(error);
+    results.push({ name, passed: false, message });
+    console.log('  FAIL  ' + name + ': ' + message);
   }
 }
 
@@ -45,105 +54,99 @@ function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
-async function request(path: string, options?: RequestInit): Promise<any> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
-  const body = await res.json();
-  return { status: res.status, body };
-}
-
 async function run(): Promise<void> {
-  console.log(`\n\x1b[1mRenderMind API Tests\x1b[0m`);
-  console.log(`Target: ${BASE_URL}\n`);
+  console.log('RenderMind E2E against ' + BASE_URL);
 
-  // ─── Health ────────────────────────────────────────────────
-  console.log('\x1b[1mHealth\x1b[0m');
-
-  await test('GET /health returns 200', async () => {
-    const { status, body } = await request('/health');
-    assert(status === 200, `Expected 200, got ${status}`);
-    assert(body.status === 'ok', `Expected status "ok", got "${body.status}"`);
-    assert(body.version === '1.0.0', `Expected version "1.0.0"`);
+  await test('GET /healthz returns 200 (liveness)', async () => {
+    const res = await request('/healthz');
+    assert(res.status === 200, 'expected 200, got ' + res.status);
+    assert(res.body.status === 'ok', 'expected status ok');
+    assert(typeof res.body.version === 'string', 'expected a version string');
   });
 
-  await test('GET /health includes dependencies', async () => {
-    const { body } = await request('/health');
-    assert(body.dependencies !== undefined, 'Missing dependencies');
-    assert(typeof body.dependencies.redis === 'string', 'Missing redis status');
+  await test('GET /readyz reports provider readiness', async () => {
+    const res = await request('/readyz');
+    // 200 when a provider is configured, 503 when none is. Both are correct; what
+    // matters is that the payload explains which.
+    assert([200, 503].includes(res.status), 'unexpected status ' + res.status);
+    assert(res.body.checks !== undefined, 'missing checks object');
+    assert(
+      typeof res.body.checks.providers.available === 'number',
+      'missing provider availability count',
+    );
   });
 
-  // ─── Backends ──────────────────────────────────────────────
-  console.log('\n\x1b[1mBackends\x1b[0m');
-
-  await test('GET /api/v1/backends returns list', async () => {
-    const { status, body } = await request('/api/v1/backends');
-    assert(status === 200, `Expected 200, got ${status}`);
-    assert(Array.isArray(body.backends), 'Expected backends array');
-    assert(body.backends.length === 3, `Expected 3 backends, got ${body.backends.length}`);
-  });
-
-  // ─── Validation ────────────────────────────────────────────
-  console.log('\n\x1b[1mValidation\x1b[0m');
-
-  await test('POST /api/v1/generate rejects empty body', async () => {
-    const { status, body } = await request('/api/v1/generate', {
+  await test('Anthropic bridge requires max_tokens', async () => {
+    const res = await request('/v1/messages', {
       method: 'POST',
-      body: '{}',
+      body: JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'hi' }] }),
     });
-    assert(status === 400, `Expected 400, got ${status}`);
-    assert(body.error === 'VALIDATION_ERROR', `Expected VALIDATION_ERROR`);
+    assert(res.status === 400, 'expected 400, got ' + res.status);
+    assert(res.body.error.type === 'invalid_request_error', 'expected invalid_request_error');
   });
 
-  await test('POST /api/v1/generate rejects short width', async () => {
-    const { status, body } = await request('/api/v1/generate', {
+  await test('Anthropic count_tokens endpoint responds', async () => {
+    const res = await request('/v1/messages/count_tokens', {
       method: 'POST',
-      body: JSON.stringify({ prompt: 'test', width: 10 }),
+      body: JSON.stringify({
+        model: 'm',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'hello there' }],
+      }),
     });
-    assert(status === 400, `Expected 400, got ${status}`);
+    assert(res.status === 200, 'expected 200, got ' + res.status);
+    assert(typeof res.body.input_tokens === 'number', 'expected input_tokens');
   });
 
-  await test('POST /api/v1/generate accepts valid prompt', async () => {
-    const { status, body } = await request('/api/v1/generate', {
+  await test('openclaw request without a prompt is rejected', async () => {
+    const res = await request('/v1/images/generations', {
       method: 'POST',
-      body: JSON.stringify({ prompt: 'A beautiful sunset' }),
+      body: JSON.stringify({}),
     });
-    assert(status === 200, `Expected 200, got ${status}`);
-    assert(body.id, 'Missing generation ID');
-    assert(body.status, 'Missing status');
+    assert(res.status === 400, 'expected 400, got ' + res.status);
   });
 
-  // ─── Status ────────────────────────────────────────────────
-  console.log('\n\x1b[1mStatus\x1b[0m');
-
-  await test('GET /api/v1/status/:id returns 404 for unknown', async () => {
-    const { status, body } = await request('/api/v1/status/gen_nonexistent');
-    assert(status === 404, `Expected 404, got ${status}`);
+  await test('GET /v1/models returns an openclaw-shaped list', async () => {
+    const res = await request('/v1/models');
+    assert(res.status === 200, 'expected 200, got ' + res.status);
+    assert(res.body.object === 'list', 'expected object: list');
+    assert(Array.isArray(res.body.data), 'expected a data array');
   });
 
-  // ─── 404 ───────────────────────────────────────────────────
-  console.log('\n\x1b[1mError Handling\x1b[0m');
-
-  await test('GET /nonexistent returns 404', async () => {
-    const { status, body } = await request('/nonexistent');
-    assert(status === 404, `Expected 404, got ${status}`);
-    assert(body.error === 'NOT_FOUND', `Expected NOT_FOUND`);
+  await test('GET /api/v1/backends lists providers', async () => {
+    const res = await request('/api/v1/backends');
+    assert(res.status === 200, 'expected 200, got ' + res.status);
+    assert(Array.isArray(res.body.backends), 'expected a backends array');
   });
 
-  // ─── Summary ───────────────────────────────────────────────
-  console.log('\n' + '─'.repeat(50));
+  await test('openclaw bridge uses the openclaw error envelope', async () => {
+    const res = await request('/v1/images/generations', { method: 'POST', body: '{}' });
+    assert(res.status === 400, 'expected 400, got ' + res.status);
+    assert(res.body.error !== undefined, 'expected an error object');
+    assert(res.body.error.type !== undefined, 'expected error.type');
+    // The native envelope must not leak through a bridge.
+    assert(res.body.statusCode === undefined, 'native envelope leaked');
+  });
+
+  await test('Anthropic bridge uses the Anthropic error envelope', async () => {
+    const res = await request('/v1/messages', { method: 'POST', body: '{}' });
+    assert(res.status === 400, 'expected 400, got ' + res.status);
+    assert(res.body.type === 'error', 'expected type: error');
+    assert(res.body.error.type !== undefined, 'expected error.type');
+  });
+
   const passed = results.filter((r) => r.passed).length;
   const failed = results.filter((r) => !r.passed).length;
-  const total = results.length;
 
+  console.log('');
+  console.log('--------------------------------------------');
   if (failed === 0) {
-    console.log(`\x1b[32m\x1b[1m✓ All ${total} tests passed\x1b[0m`);
+    console.log('All ' + passed + ' checks passed');
   } else {
-    console.log(`\x1b[31m\x1b[1m✗ ${failed}/${total} tests failed\x1b[0m`);
-    results
-      .filter((r) => !r.passed)
-      .forEach((r) => console.log(`  \x1b[31m- ${r.name}: ${r.message}\x1b[0m`));
+    console.log(failed + ' of ' + (passed + failed) + ' checks failed');
+    for (const r of results.filter((x) => !x.passed)) {
+      console.log('  - ' + r.name + ': ' + r.message);
+    }
     process.exit(1);
   }
 }

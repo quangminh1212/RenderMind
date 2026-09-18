@@ -188,10 +188,62 @@ GET /health
 
 | Backend | Status | Models | Configuration |
 |---------|--------|--------|---------------|
+| **openclaw-compatible** | ✅ Ready | dall-e-3, gpt-image-1, any | `OPENAI_API_KEY` + `OPENAI_BASE_URL` |
 | **Stable Diffusion** | ✅ Ready | SD XL 1.0, SD 1.6, SD Ultra | `STABILITY_API_KEY` |
-| **DALL-E 3** | ✅ Ready | dall-e-3 | `OPENAI_API_KEY` |
 | **Flux** | ✅ Ready | flux-1.1-pro, flux-schnell | `REPLICATE_API_TOKEN` |
 | **Custom HTTP** | ✅ Ready | Any | `CUSTOM_BACKENDS` env |
+
+## 🔌 Protocol Bridge (any model → images)
+
+RenderMind doubles as a **protocol bridge**: any client or model that speaks the
+openclaw **or** Anthropic protocol can hit RenderMind and have the request
+translated into a real image-generation call against your configured backend.
+
+| Endpoint | Protocol | Behaviour |
+|----------|----------|-----------|
+| `POST /v1/images/generations` | openclaw | Drop-in openclaw image API. Accepts `prompt`, `model`, `size`, `n`, `response_format`, … |
+| `POST /v1/messages` | Anthropic (Claude) | Accepts a Claude Messages request; the prompt is turned into an image and returned as an Anthropic `message` with an `image` content block. |
+| `POST /api/v1/generate` | RenderMind native | The original unified endpoint. |
+
+### Example — openclaw client
+
+```bash
+curl -X POST http://localhost:3000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"a red apple on a table","model":"dall-e-3","size":"1024x1024"}'
+```
+
+### Example — Claude/Anthropic client
+
+```bash
+curl -X POST http://localhost:3000/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"claude-3-5-sonnet",
+    "max_tokens":1024,
+    "messages":[{"role":"user","content":"Generate an image of a mountain lake at dawn"}]
+  }'
+```
+
+Response:
+
+```json
+{
+  "id": "msg_…",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    { "type": "text", "text": "Generated an image for \"…\"." },
+    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "…" } }
+  ],
+  "stop_reason": "end_turn"
+}
+```
+
+To point the bridge at **your own** image API, just set `OPENAI_BASE_URL` to any
+endpoint that implements `POST {base}/images/generations` — openclaw, Azure
+openclaw, LM Studio, LocalAI, or a custom image service. `OPENAI_IMAGE_MODEL`
+sets the default model name sent to that endpoint.
 
 ## Configuration
 

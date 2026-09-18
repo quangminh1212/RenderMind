@@ -1,2 +1,3 @@
 export * from './api.types';
-export * from './backend.types';
+export * from './canonical.types';
+export * from './capability.types';

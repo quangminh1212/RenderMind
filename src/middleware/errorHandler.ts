@@ -1,75 +1,141 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
-import { ApiError } from '../types/api.types';
+import { toAnthropicError, toOpenAIError } from '../utils/formatAdapters';
 import { logger } from '../utils/logger';
 import { getConfig } from '../config';
 
+/**
+ * Application error with an explicit machine-readable code.
+ *
+ * The previous class derived its code from `err.name`, so every instance reported
+ * `APPERROR` regardless of what went wrong.
+ */
 export class AppError extends Error {
-  public readonly statusCode: number;
-  public readonly isOperational: boolean;
+  readonly statusCode: number;
+  readonly code: string;
+  readonly isOperational: boolean;
 
-  constructor(message: string, statusCode: number = 500, isOperational: boolean = true) {
+  constructor(message: string, statusCode = 500, code = 'internal_error', isOperational = true) {
     super(message);
     this.name = 'AppError';
     this.statusCode = statusCode;
+    this.code = code;
     this.isOperational = isOperational;
     Object.setPrototypeOf(this, AppError.prototype);
   }
 }
 
+/** Which protocol error envelope a path expects. */
+function protocolFor(path: string): 'anthropic' | 'openai' | 'native' {
+  if (path.startsWith('/v1/messages')) return 'anthropic';
+  if (path.startsWith('/v1/images') || path.startsWith('/v1/models')) return 'openai';
+  return 'native';
+}
+
+/**
+ * Terminal error handler.
+ *
+ * Fixes the audit's P0 finding that bridge routes leaked the native envelope, so no
+ * openclaw or Anthropic SDK could parse a failure. The shape now follows the path.
+ *
+ * Note: Express 4 inspects the handler's arity to identify it as error middleware, so
+ * all four parameters must be declared.
+ */
 export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
   const config = getConfig();
-  const isProduction = config.server.nodeEnv === 'production';
   const requestId = req.headers['x-request-id'] as string;
+  const protocol = protocolFor(req.path);
 
-  // Zod validation error
+  // ── Resolve status and message ─────────────────────────────
+  let status = 500;
+  let message = 'An unexpected error occurred';
+  let code = 'internal_error';
+  let details: unknown;
+
   if (err instanceof ZodError) {
-    const response: ApiError = {
-      error: 'VALIDATION_ERROR',
-      message: 'Invalid request body',
-      statusCode: 400,
-      details: err.errors.map((e) => ({
-        field: e.path.join('.'),
-        message: e.message,
-      })),
-    };
+    status = 400;
+    message = 'Invalid request body';
+    code = 'invalid_request_error';
+    details = err.errors.map((e) => ({ field: e.path.join('.'), message: e.message }));
+  } else if (err instanceof AppError) {
+    status = err.statusCode;
+    message = err.message;
+    code = err.code;
+  } else if (isJsonParseError(err)) {
+    // A malformed JSON body previously surfaced as a 500 leaking the parser's message.
+    status = 400;
+    message = 'Request body is not valid JSON';
+    code = 'invalid_request_error';
+  } else {
+    // Unknown error: log fully, disclose nothing in production.
+    logger.error('Unhandled error', {
+      path: req.path,
+      requestId,
+      error: err.message,
+      stack: err.stack,
+    });
+    message = config.server.isProduction ? 'An unexpected error occurred' : err.message;
+  }
 
-    logger.warn('Validation error', { path: req.path, requestId, details: response.details });
-    res.status(400).json(response);
+  if (status >= 500) {
+    logger.error('Server error', { path: req.path, requestId, code, error: err.message });
+  } else {
+    logger.warn('Client error', { path: req.path, requestId, code, error: err.message });
+  }
+
+  // ── Emit in the caller's protocol ──────────────────────────
+  if (protocol === 'anthropic') {
+    res.status(status).json(toAnthropicError(message, status, requestId));
     return;
   }
 
-  // Application error
-  if (err instanceof AppError) {
-    const response: ApiError = {
-      error: err.name.toUpperCase().replace(/\s+/g, '_'),
-      message: err.message,
-      statusCode: err.statusCode,
-    };
-
-    if (err.statusCode >= 500) {
-      logger.error('Server error', { path: req.path, requestId, error: err.message });
-    } else {
-      logger.warn('Client error', { path: req.path, requestId, error: err.message });
-    }
-
-    res.status(err.statusCode).json(response);
+  if (protocol === 'openai') {
+    res.status(status).json(toOpenAIError(message, status, null, code));
     return;
   }
 
-  // Unknown error — never leak internals in production
-  logger.error('Unhandled error', {
-    path: req.path,
+  res.status(status).json({
+    error: code.toUpperCase(),
+    message,
+    statusCode: status,
     requestId,
-    error: err.message,
-    stack: err.stack,
+    ...(details ? { details } : {}),
   });
+}
 
-  const response: ApiError = {
-    error: 'INTERNAL_ERROR',
-    message: isProduction ? 'An unexpected error occurred' : err.message,
-    statusCode: 500,
-  };
+/** Detect a body-parser JSON syntax error. */
+function isJsonParseError(err: Error): boolean {
+  return (
+    err instanceof SyntaxError &&
+    'body' in err &&
+    'status' in err &&
+    (err as { status?: number }).status === 400
+  );
+}
 
-  res.status(500).json(response);
+/** 404 handler that also respects the caller's protocol. */
+export function notFoundHandler(req: Request, res: Response): void {
+  const requestId = req.headers['x-request-id'] as string;
+  const protocol = protocolFor(req.path);
+
+  if (protocol === 'anthropic') {
+    res
+      .status(404)
+      .json(toAnthropicError(`Unknown endpoint: ${req.method} ${req.path}`, 404, requestId));
+    return;
+  }
+
+  if (protocol === 'openai') {
+    res
+      .status(404)
+      .json(toOpenAIError(`Unknown endpoint: ${req.method} ${req.path}`, 404, null, 'not_found'));
+    return;
+  }
+
+  res.status(404).json({
+    error: 'NOT_FOUND',
+    message: 'The requested endpoint does not exist',
+    statusCode: 404,
+    requestId,
+  });
 }

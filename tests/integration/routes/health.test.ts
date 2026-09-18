@@ -1,77 +1,164 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
-import express from 'express';
+import { createApp } from '../../../src/app';
+import { useFakeEngine, FakeProvider, useTestConfig } from '../../helpers/harness';
 
-vi.mock('../../../src/config', () => ({
-  getConfig: vi.fn(() => ({
-    server: { port: 3000, host: '0.0.0.0', nodeEnv: 'test' },
-    auth: { apiKeyHeader: 'x-api-key', apiKeys: [], enabled: false },
-    cors: { origins: ['*'] },
-    backends: {
-      stability: { enabled: false, apiKey: '', apiHost: '' },
-      openclaw: { enabled: false, apiKey: '' },
-      replicate: { enabled: false, apiToken: '' },
-    },
-    cache: { ttl: 3600 },
-    redis: { url: 'redis://localhost:6379' },
-    queue: { concurrency: 5 },
-    rateLimit: { windowMs: 60000, maxRequests: 60 },
-    webhook: {},
-  })),
-}));
+/**
+ * Health endpoint tests.
+ *
+ * The previous suite asserted that a Redis-less deployment returns 503, which locked in
+ * the wrong contract: Redis is an optional dependency, so a perfectly healthy
+ * single-provider deployment was reported as degraded and its container marked
+ * unhealthy by the Dockerfile HEALTHCHECK.
+ *
+ * These tests pin the corrected split:
+ *   /healthz — liveness, always 200
+ *   /readyz  — readiness, 200 when >= 1 provider is available
+ */
+
+let redisConnected = false;
 
 vi.mock('../../../src/services/cache.service', () => ({
   cacheService: {
     connect: vi.fn(),
     disconnect: vi.fn(),
-    get: vi.fn().mockResolvedValue(null),
-    set: vi.fn(),
-    del: vi.fn(),
-    isConnected: vi.fn().mockReturnValue(false),
+    read: vi.fn().mockResolvedValue({ outcome: 'miss' }),
+    write: vi.fn().mockResolvedValue(true),
+    delete: vi.fn(),
+    isConnected: vi.fn(() => redisConnected),
+    getStats: vi.fn().mockReturnValue({
+      hits: 1,
+      misses: 2,
+      errors: 0,
+      writes: 3,
+      writeFailures: 0,
+    }),
   },
 }));
-
-vi.mock('../../../src/services/queue.service', () => ({
-  queueService: {
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    isAvailable: vi.fn().mockReturnValue(false),
-  },
-}));
-
-import { createApp } from '../../../src/app';
 
 describe('Health API', () => {
-  let app: express.Application;
+  let app: ReturnType<typeof createApp>;
 
-  beforeAll(() => {
-    app = createApp();
+  beforeEach(() => {
+    redisConnected = false;
+    useTestConfig();
   });
 
-  it('GET /health should return 503 when deps are down', async () => {
-    const response = await request(app).get('/health');
-    expect(response.status).toBe(503);
-    expect(response.body.status).toBe('degraded');
-    expect(response.body).toHaveProperty('version');
-    expect(response.body).toHaveProperty('uptime');
+  describe('GET /healthz (liveness)', () => {
+    it('returns 200 even without Redis', async () => {
+      useFakeEngine([new FakeProvider()]);
+      app = createApp();
+
+      const res = await request(app).get('/healthz');
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+    });
+
+    it('returns 200 even when no provider is configured', async () => {
+      // Liveness is about the process, not about dependencies.
+      useFakeEngine([]);
+      app = createApp();
+
+      const res = await request(app).get('/healthz');
+      expect(res.status).toBe(200);
+    });
+
+    it('reports a version read from package.json rather than npm_package_version', async () => {
+      useFakeEngine([new FakeProvider()]);
+      // npm_package_version is unset when running `node dist/index.js`, which made the
+      // old endpoint silently report a hardcoded value.
+      const original = process.env.npm_package_version;
+      delete process.env.npm_package_version;
+
+      app = createApp();
+      const res = await request(app).get('/healthz');
+
+      expect(res.body.version).toMatch(/^\d+\.\d+\.\d+/);
+
+      if (original !== undefined) process.env.npm_package_version = original;
+    });
   });
 
-  it('GET /health should include dependency info', async () => {
-    const response = await request(app).get('/health');
-    expect(response.body.dependencies).toBeDefined();
-    expect(response.body.dependencies.redis).toBe('disconnected');
+  describe('GET /readyz (readiness)', () => {
+    it('returns 200 with a provider available and no Redis', async () => {
+      useFakeEngine([new FakeProvider()]);
+      app = createApp();
+
+      const res = await request(app).get('/readyz');
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ready');
+      // Redis absence is reported, but does not make the service unready.
+      expect(res.body.checks.redis.connected).toBe(false);
+      expect(res.body.checks.redis.ok).toBe(true);
+    });
+
+    it('returns 503 when no provider is available', async () => {
+      useFakeEngine([]);
+      app = createApp();
+
+      const res = await request(app).get('/readyz');
+
+      expect(res.status).toBe(503);
+      expect(res.body.checks.providers.ok).toBe(false);
+    });
+
+    it('returns 503 when Redis is required by config and is down', async () => {
+      useTestConfig({ HEALTH_REQUIRE_REDIS: 'true' });
+      useFakeEngine([new FakeProvider()]);
+      app = createApp();
+
+      const res = await request(app).get('/readyz');
+
+      expect(res.status).toBe(503);
+      expect(res.body.checks.redis.required).toBe(true);
+    });
+
+    it('reports per-provider detail including breaker state', async () => {
+      useFakeEngine([new FakeProvider()]);
+      app = createApp();
+
+      const res = await request(app).get('/readyz');
+
+      expect(res.body.checks.providers.details[0]).toMatchObject({
+        name: 'fake',
+        status: 'available',
+        breaker: 'closed',
+      });
+    });
+
+    it('includes cache statistics', async () => {
+      useFakeEngine([new FakeProvider()]);
+      app = createApp();
+
+      const res = await request(app).get('/readyz');
+      expect(res.body.cache).toMatchObject({ hits: 1, misses: 2 });
+    });
   });
 
-  it('GET /health should include memory info', async () => {
-    const response = await request(app).get('/health');
-    expect(response.body.memory).toBeDefined();
-    expect(response.body.memory.rss_mb).toBeGreaterThan(0);
+  describe('GET /health (backwards-compatible alias)', () => {
+    it('returns 200 and includes dependency detail', async () => {
+      useFakeEngine([new FakeProvider()]);
+      app = createApp();
+
+      const res = await request(app).get('/health');
+
+      expect(res.status).toBe(200);
+      expect(res.body.dependencies).toBeDefined();
+      expect(res.body.dependencies.providers).toBeDefined();
+    });
   });
 
-  it('GET /health should include backend info', async () => {
-    const response = await request(app).get('/health');
-    expect(response.body.backends).toBeDefined();
-    expect(response.body.backends.total).toBe(3);
-    expect(response.body.backends.available).toBe(0);
+  describe('GET /metrics', () => {
+    it('exposes Prometheus metrics', async () => {
+      useFakeEngine([new FakeProvider()]);
+      app = createApp();
+
+      const res = await request(app).get('/metrics');
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('rendermind_');
+    });
   });
 });
