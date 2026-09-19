@@ -1,0 +1,36 @@
+# Chuẩn hóa xuống dòng — bắt buộc LF cho file văn bản.
+#
+# Lý do: `.prettierrc` đặt "endOfLine": "lf", nhưng trên Windows với
+# `core.autocrlf=true`, git chuyển LF -> CRLF khi checkout, khiến prettier
+# báo lỗi `Delete ␍` trên toàn bộ file. File này ghi luật vào repo để mọi
+# máy clone về đều nhất quán, không phụ thuộc cấu hình git của từng người.
+
+# Mặc định: chuẩn hóa về LF trong repo, giữ LF khi checkout.
+* text=auto eol=lf
+
+# Mã nguồn và file văn bản: luôn LF.
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.sh   text eol=lf
+
+# File nhị phân: không đụng tới.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.pdf  binary
+
+# Script Windows cần CRLF để chạy đúng trong cmd.exe.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
