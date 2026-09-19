@@ -2,9 +2,11 @@
 
 # RenderMind
 
-**An image generation engine for AI coding tools**
+**Give a text-only model the ability to generate images**
 
-Give any AI coding agent, SDK, or chat client the ability to generate images.
+RenderMind is an engine that turns a chat-completions model into an image generator.
+Ask it for an image; it instructs the model, extracts the result, and hands it back —
+with an honest error if the model cannot actually produce pixels.
 
 [![CI](https://github.com/quangminh1212/RenderMind/actions/workflows/ci.yml/badge.svg)](https://github.com/quangminh1212/RenderMind/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -17,46 +19,34 @@ Give any AI coding agent, SDK, or chat client the ability to generate images.
 
 ## What is RenderMind?
 
-Claude Code, Cursor, Continue, LiteLLM and Open WebUI can all call an API to generate
-images. RenderMind is the service on the other end of that call.
+Most capable models expose one endpoint: `POST /chat/completions`. They have no images
+API at all. RenderMind is the layer that turns such a model into an image source — by
+instructing it to answer with an image, then extracting the image from the reply.
 
-It speaks two protocols that AI tooling already uses, and routes the request to whichever
-image provider you have configured:
+There are two endpoints:
 
-| Surface | Speaks | Use it when |
+| Endpoint | Input | Use it when |
 |---|---|---|
-| `POST /v1/images/generations` | openclaw Images API | Your tool already calls the openclaw image API |
-| `POST /v1/messages` | Anthropic Messages API | Your tool calls Claude and needs image output |
-| `POST /api/v1/generate` | RenderMind native | You want the full feature set directly |
+| `POST /chat` | a text prompt | you want an image from a description |
+| `POST /vision` | a text prompt **plus** input images | you want an image derived from other images |
 
-Point a client at RenderMind instead of the upstream, and it works without code changes.
+Both send the same request shape; `/vision` simply requires `images`.
 
 ## Why it exists
 
-A coding agent that needs an image has no standard way to ask for one. RenderMind closes
-that gap by acting as the translation layer between the protocols agents speak and the
-providers that actually make images.
+The premise is narrow and deliberate: a model that can only talk should still be able to
+draw. RenderMind is the adapter that makes that work, and it is built around one rule —
+**never pretend a request succeeded**.
 
-Three properties matter more than feature count here:
-
-- **Capability negotiation.** Providers declare what they can do. The engine decides
-  before dispatching, and reports any adaptation it makes rather than hiding it.
-- **Honest errors.** A client mistake is a 4xx. An upstream failure is a 5xx. A requested
-  response format is never silently substituted for a different one.
-- **Protocol fidelity.** Each surface returns that protocol's own error envelope, so real
-  SDKs parse failures instead of throwing on an unrecognised shape.
-
-## Supported providers
-
-| Provider | Service | Credential |
-|---|---|---|
-| openclaw | Any openclaw-compatible image API (api.openai.com, Azure, LM Studio, LocalAI) | `OPENAI_API_KEY` |
-| stability | Stability AI (Stable Diffusion) | `STABILITY_API_KEY` |
-| replicate | Replicate (Flux) | `REPLICATE_API_TOKEN` |
-| custom | Your own HTTP endpoint | `CUSTOM_BACKENDS` |
-
-"openclaw" names the protocol this provider speaks, not a vendor. See
-[docs/providers.md](docs/providers.md).
+- **Honest output.** A model that replies with prose and no image is reported as a
+  terminal `422 unsupported_output`, not an empty success. The whole point is to tell you
+  when the upstream cannot produce pixels.
+- **Honest errors.** A caller mistake is a 4xx. An upstream failure is a 5xx. A crash is
+  never dressed up as a client error, and vice versa.
+- **Strict delivery.** If you asked for base64, you get base64 — never a silent
+  substitution to a URL.
+- **Disclosed adaptation.** When the engine alters your request (fans out a batch, drops
+  an unsupported hint), it says so rather than hiding it.
 
 ## Quick start
 
@@ -64,7 +54,7 @@ Three properties matter more than feature count here:
 
     git clone https://github.com/quangminh1212/RenderMind.git
     cd RenderMind
-    cp .env.example .env    # then add at least one provider key
+    cp .env.example .env    # set CHAT_API_KEY and CHAT_BASE_URL
     docker compose up
 
 ### Local
@@ -80,93 +70,24 @@ The service listens on port 3000. Verify it:
 
 ### Generate an image
 
-openclaw-compatible:
-
-    curl -X POST http://localhost:3000/v1/images/generations \
+    curl -X POST http://localhost:3000/chat \
       -H 'Content-Type: application/json' \
-      -H 'Authorization: Bearer <your RenderMind key>' \
       -d '{"prompt":"a red apple on a wooden table","size":"1024x1024"}'
 
-Anthropic-compatible:
+With input images:
 
-    curl -X POST http://localhost:3000/v1/messages \
+    curl -X POST http://localhost:3000/vision \
       -H 'Content-Type: application/json' \
-      -H 'x-api-key: <your RenderMind key>' \
       -d '{
-        "model":"claude-3-5-sonnet",
-        "max_tokens":1024,
-        "messages":[{"role":"user","content":"Generate an image of a mountain lake at dawn"}]
+        "prompt":"repaint this in watercolour",
+        "images":["data:image/png;base64,<payload>"]
       }'
-
-Native:
-
-    curl -X POST http://localhost:3000/api/v1/generate \
-      -H 'Content-Type: application/json' \
-      -d '{"prompt":"a red apple","count":2,"response_format":"url"}'
-
-## Using it from a coding agent
-
-Any client that supports a custom base URL works:
-
-    import Anthropic from '@anthropic-ai/sdk';
-
-    const client = new Anthropic({
-      baseURL: 'http://localhost:3000',
-      apiKey: process.env.RENDERMIND_KEY,
-    });
-
-    const message = await client.messages.create({
-      model: 'claude-3-5-sonnet',
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: 'Draw a mountain lake at dawn' }],
-    });
-
-    // The image arrives as a tool_use block for the generate_image tool.
-    const toolUse = message.content.find((b) => b.type === 'tool_use');
-    console.log(toolUse.input.images[0].url);
-
-The `generate_image` tool contract is discoverable at `GET /v1/messages/tools`.
-
-## Endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/images/generations` | openclaw-compatible image generation |
-| GET | `/v1/models` | Model discovery for LiteLLM, Open WebUI, Continue |
-| POST | `/v1/messages` | Anthropic-compatible image generation |
-| POST | `/v1/messages/count_tokens` | Token estimate (called by Claude Code) |
-| GET | `/v1/messages/tools` | The `generate_image` tool declaration |
-| POST | `/api/v1/generate` | Native generation |
-| POST | `/api/v1/batch` | Native batch generation |
-| GET | `/api/v1/status/:id` | Generation status and result |
-| GET | `/api/v1/backends` | Provider capabilities |
-| GET | `/healthz` `/readyz` `/health` | Liveness, readiness, alias |
-| GET | `/metrics` | Prometheus metrics |
-| GET | `/docs` | OpenAPI documentation (non-production) |
-
-## Authentication
-
-Set `API_KEYS` to a comma-separated list. Every endpoint except the health probes, `/docs`
-and `/api/v1/backends` then requires a key.
-
-The key may be presented in any of these forms:
-
-    x-api-key: <key>
-    Authorization: Bearer <key>
-
-Comparison is constant-time. An invalid key returns 401.
-
-**In production the server refuses to start without `API_KEYS`** unless you set
-`ALLOW_UNAUTHENTICATED=true`. An unset variable silently producing an open proxy that
-spends your provider credits is the failure mode this prevents.
 
 ## Configuration
 
-All configuration is environment variables; see [.env.example](.env.example) for the
+Every upstream is one chat-completions endpoint. See [.env.example](.env.example) for the
 annotated list. Invalid values are a startup error naming each offending variable, rather
 than a confusing runtime failure.
-
-Key variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -174,77 +95,95 @@ Key variables:
 | `NODE_ENV` | development | Set to `production` for strict mode |
 | `API_KEYS` | none | Required in production |
 | `CORS_ORIGINS` | `*` outside production | Allowed origins |
-| `REDIS_URL` | redis://localhost:6379 | Optional cache and record store |
+| `CHAT_API_KEY` | none | **Enables the provider** — no key, no provider |
+| `CHAT_BASE_URL` | `https://api.openai.com/v1` | Any chat-completions endpoint |
+| `CHAT_MODEL` | `gpt-4o` | Model used for text-only generation |
+| `CHAT_VISION_MODEL` | falls back to `CHAT_MODEL` | Model used when input images are present |
+| `CHAT_EXTRA_MODELS` | none | Extra model ids the endpoint accepts |
+| `CHAT_SYSTEM_PROMPT` | built-in | Replaces the "answer with an image" instruction |
+| `REDIS_URL` | redis://localhost:6379 | Optional cache |
 | `MAX_GENERATION_CONCURRENCY` | 10 | Global cap on concurrent upstream calls |
-| `OPENAI_API_KEY` | none | Enables the openclaw provider |
-| `OPENAI_BASE_URL` | api.openai.com/v1 | Point at any compatible endpoint |
-| `STABILITY_API_KEY` | none | Enables Stability |
-| `REPLICATE_API_TOKEN` | none | Enables Replicate |
-| `CUSTOM_BACKENDS` | none | JSON array of custom HTTP providers |
-| `ANTHROPIC_IMAGE_BLOCK_MODE` | off | Set to `extension` for an image content block |
+
+## How a model is made to answer with an image
+
+The provider sends a **system instruction** that establishes the standing requirement:
+
+> You are an image generation backend. When asked for an image, respond with the image
+> itself... Return the image as a markdown image whose URL is a data URI... If you cannot
+> produce an image, reply with exactly: NO_IMAGE
+
+It then accepts whichever of these the model actually produces, tried in order, because
+models differ:
+
+1. a `content` part carrying `image_url` (the multimodal shape)
+2. a `data:image/...;base64,...` URI anywhere in the text
+3. a bare image URL in the text
+4. a JSON object with `b64_json` / `image_base64` / `images[]`, emitted as text
+
+Anything else — prose, an apology, a description — is a terminal failure. `NO_IMAGE` is
+never silently swapped for a placeholder.
 
 ## Architecture
 
-    adapters/          protocol in:  translate a wire format into the canonical model
-      openai/          openclaw Images API surface
-      anthropic/       Anthropic Messages surface, including SSE
-    engine/            the canonical core
-      capability.matcher    decides what can serve a request, and how
-      generation.service    plan-driven dispatch, concurrency, failover
-      generation.repository generation state machine and records
-      errors                typed errors preserving upstream detail
-    providers/         protocol out: talk to one image service
-    platform/          artifact store, HTTP resilience, metrics
+    adapters/chat/       protocol in:  validate and translate the wire body
+    engine/              the canonical core
+      capability.matcher   decides what can serve a request, and how
+      generation.service   plan-driven dispatch, concurrency, failover
+      errors               typed errors preserving upstream detail
+    providers/           protocol out: talk to the chat model
+      chat.provider        instructs a model to answer with an image
+      prompt.builder       folds intent into the instruction text
+    platform/            artifact store, HTTP resilience, metrics
 
-The dependency direction is one-way: **adapters -> engine -> providers**. Adapters never
-import providers and providers never import adapters. A provider knows only the canonical
-request and result, which is what lets "Anthropic in, ComfyUI out" work without
-cross-contamination.
+The dependency direction is one-way: **adapters → engine → providers**. Adapters never
+import providers, and providers never import adapters. A provider knows only the canonical
+request and result, which is what lets a second provider class be added without touching
+routing.
 
-`docs/providers.md` explains capability negotiation in detail. `docs/caching.md` covers the
-cache key and the generation state machine.
+## Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/chat` | Image from a text prompt |
+| POST | `/vision` | Image from a prompt plus input images |
+| GET | `/healthz` `/readyz` `/health` | Liveness, readiness, alias |
+| GET | `/metrics` | Prometheus metrics |
+| GET | `/docs` | OpenAPI documentation (non-production) |
+
+## Authentication
+
+Set `API_KEYS` to a comma-separated list. Every endpoint except the health probes and
+`/docs` then requires a key, presented as `x-api-key` or `Authorization: Bearer`.
+
+Comparison is constant-time. An invalid key returns 401. **In production the server
+refuses to start without `API_KEYS`** unless you set `ALLOW_UNAUTHENTICATED=true` — an
+unset variable silently producing an open proxy that spends your provider credits is the
+failure mode this prevents.
 
 ## Development
 
     npm run dev            # watch mode
     npm test               # unit and integration tests
     npm run test:coverage  # with coverage thresholds
-    npm run test:e2e       # end-to-end against a running server
     npm run typecheck
     npm run lint
     npm run verify         # typecheck + lint + test
 
-201 tests cover the engine, the providers, both protocol bridges and the HTTP surface,
-including contract tests that drive the real openclaw and Anthropic SDKs against the
-bridges.
-
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [docs/providers.md](docs/providers.md) | Capability negotiation, ranking, adding a provider |
-| [docs/protocols/openai-images.md](docs/protocols/openai-images.md) | openclaw bridge: fields, guarantees, divergences |
-| [docs/protocols/anthropic-messages.md](docs/protocols/anthropic-messages.md) | Anthropic bridge: the tool_use contract, SSE, divergences |
-| [docs/error-taxonomy.md](docs/error-taxonomy.md) | Every error envelope and status decision |
-| [docs/caching.md](docs/caching.md) | Cache key design, three-state reads, state machine |
-| [SECURITY.md](SECURITY.md) | Threat model, controls, honest limitations |
-
 ## Known limitations
 
-These are stated plainly because a proxy that overstates its compatibility is worse than
-one that documents its gaps.
+These are stated plainly because a proxy that overstates its capability is worse than one
+that documents its gaps.
 
-- **`/v1/images/edits` and `/v1/images/variations` are not implemented.** They return a
-  404 in the protocol envelope, so a client fails predictably rather than silently.
-- **Anthropic image output is a `tool_use` block, not an image block.** The Anthropic
-  response ContentBlock union has no `image` member, so an image block would break strict
-  clients. `ANTHROPIC_IMAGE_BLOCK_MODE=extension` opts in for custom clients.
-- **Anthropic `usage` figures are estimates** from character counts, not metered tokens.
-- **The SSRF filter does not resolve DNS.** A hostname resolving to a link-local address
-  passes it. Treat webhook URLs as trusted input.
-- **Provider behaviour is verified against stubbed responses, not live paid APIs.** The
-  Replicate model-reference path in particular was corrected against the documented API
-  shape but not confirmed with a live token.
+- **Image quality depends entirely on the upstream model.** A text-only model told to draw
+  may return a placeholder, a stock image, or refuse. RenderMind reports what it received;
+  it cannot make a model better at drawing.
+- **Input images must be base64 data URIs.** Remote URLs are rejected with a 400 rather
+  than fetched, so a bad URL is a clear client error, not an upstream failure inside the
+  model call.
+- **Reference images require a vision model.** Set `CHAT_VISION_MODEL` for `/vision` to
+  reach a model that can see them.
+- **Seed, steps and guidance scale are not sent** unless the endpoint accepts them; those
+  hints are carried in the instruction text, not as API fields.
 
 ## License
 

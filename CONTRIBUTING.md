@@ -228,30 +228,28 @@ receives a canonical request and returns a canonical result.
 5. Add unit tests under tests/unit/providers/ that stub fetch and assert both the outgoing
    payload and the error classification.
 
-## Adding a protocol adapter
+## Changing the inbound adapter
 
-An adapter translates one wire format into the canonical model. It contains no business
-logic and must never import a provider.
+There is one adapter (`src/adapters/chat/`). It validates the wire body and translates it
+into the canonical model. It contains no business logic and must never import a provider.
 
 Two rules are not negotiable:
 
-- **Return the protocol's own error envelope.** A bridge returning the native shape is
-  unusable by the SDKs it claims to support. Route errors through the adapter's error
-  builder, and add an integration test asserting the envelope for both a validation
-  failure and an auth failure.
-- **Do not silently degrade.** If you cannot honour something (streaming, a requested
-  response format, a requested size), either implement it or fail with an error that names
-  it. Never return a successful response whose shape differs from what was requested.
+- **Return the one error envelope.** Route errors through `toChatError`, and add an
+  integration test asserting the envelope for both a validation failure and an auth
+  failure. A client must never be handed a shape it cannot parse.
+- **Do not silently degrade.** If you cannot honour something (a requested response
+  format, a requested size), either implement it or fail with an error that names it.
+  Never return a successful response whose shape differs from what was requested.
 
-## Contract tests
+## Response-shape tests
 
-`openai` and `@anthropic-ai/sdk` are development dependencies, and the test suite drives
-them against the bridges with an overridden base URL. This is what makes the compatibility
-claim meaningful: asserting shapes we invented proves nothing, while a real SDK parsing a
-real response proves the contract.
+There is one response shape, so there is one place to assert it:
+`tests/unit/utils/formatAdapters.test.ts` pins the exact bytes emitted, including the
+strictness rule that a requested base64 payload is never substituted with a URL.
 
-When you change a bridge response, run the contract tests. If a real SDK rejects the
-change, the change is wrong.
+When you change the response shape, update that suite. A shape asserted only in the route
+tests can drift without any test noticing.
 
 ## Before opening a pull request
 
@@ -264,10 +262,11 @@ shape:
 
     npm run test:coverage   # must meet the engine and provider thresholds
 
-For a change to a protocol bridge, start the server and run the end-to-end suite:
+For a change to the request path, start the server and exercise both endpoints by hand:
 
     npm run dev
-    RENDERMIND_URL=http://localhost:3000 npm run test:e2e
+    curl -X POST localhost:3000/chat -H 'Content-Type: application/json' \
+      -d '{"prompt":"a red apple"}'
 
 ## Coding standards
 
