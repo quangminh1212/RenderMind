@@ -31,3 +31,8 @@ coverage/
 tmp/
 temp/
 .claude/
+
+# Review / scratch artifacts
+.review/
+.tmpmutants/
+.vitest/

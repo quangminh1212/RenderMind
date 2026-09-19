@@ -116,8 +116,17 @@ jobs:
         # A container that boots but never serves is not a working artifact, so this
         # probes liveness rather than merely asserting the process started.
 
-      - name: Run the end-to-end suite against the container
-        run: RENDERMIND_URL=http://localhost:3000 npm run test:e2e
+      - name: Exercise the public surface against the container
+        run: |
+          # /readyz proves a provider is configured; the image endpoints are exercised
+          # for validation and error behaviour, which need no upstream credential.
+          curl -fsS http://localhost:3000/readyz > /dev/null
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/chat \
+            -H 'Content-Type: application/json' -d '{"prompt":"a red apple"}')
+          test "$status" = "400" -o "$status" = "503"
+          # A malformed body is always a 400 in the one envelope.
+          curl -fsS -X POST http://localhost:3000/chat -H 'Content-Type: application/json' \
+            -d '{}' | grep -q 'invalid_request_error'
 
       - name: Container health status
         run: test "$(docker inspect --format '{{.State.Health.Status}}' rendermind-smoke)" = "healthy"

@@ -1,7 +1,7 @@
 {
   "name": "rendermind",
-  "version": "2.0.0",
-  "description": "AI image generation engine. Speaks the openclaw Images API and the Anthropic Messages API, and routes requests to configured image providers.",
+  "version": "3.0.0",
+  "description": "AI image generation engine. Turns a text-only chat-completions model into an image generator, exposed over /chat and /vision.",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -17,7 +17,6 @@
     "typecheck": "tsc --noEmit",
     "docker:build": "docker build -t rendermind .",
     "docker:run": "docker run -p 3000:3000 --env-file .env rendermind",
-    "test:e2e": "tsx tests/e2e/test-api.ts",
     "verify": "npm run typecheck && npm run lint && npm test"
   },
   "keywords": [
@@ -25,13 +24,11 @@
     "text-to-image",
     "image-generation",
     "api-gateway",
-    "openclaw-compatible",
-    "anthropic-compatible",
-    "stable-diffusion",
-    "dall-e",
-    "flux",
-    "claude",
-    "llm-tools"
+    "chat-completions",
+    "llm",
+    "llm-tools",
+    "vision",
+    "openai-compatible"
   ],
   "author": "RenderMind Contributors",
   "license": "MIT",
@@ -39,14 +36,12 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "bullmq": "^5.25.0",
     "cors": "^2.8.5",
     "dotenv": "^18.0.0",
     "express": "^4.21.0",
     "express-rate-limit": "^7.4.0",
     "helmet": "^8.0.0",
     "ioredis": "^5.4.1",
-    "multer": "^2.4.0",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",
     "prom-client": "^15.1.3",
@@ -55,10 +50,8 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.127.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
-    "@types/multer": "^2.2.0",
     "@types/supertest": "^6.0.2",
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.7",
@@ -68,7 +61,6 @@
     "eslint": "^8.57.1",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.2.1",
-    "openai": "^7.18.0",
     "prettier": "^3.3.3",
     "supertest": "^7.0.0",
     "tsx": "^4.19.1",
