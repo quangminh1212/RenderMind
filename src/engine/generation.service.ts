@@ -159,8 +159,13 @@ export class GenerationService {
     const anyCached = settled.some((s) => s.cached);
     const providerMs = Date.now() - startTime;
 
+    // The provider that actually served the request, which may not be the plan's first
+    // attempt: a terminal failure fails over to a later attempt, and reporting the
+    // winner's name would tell the caller the wrong provider produced the image.
+    const served = settled[0] ?? { provider: winner.provider, model: winner.model };
+
     // Honour the requested delivery format, inlining URLs when base64 was asked for.
-    const materialized = await materializeImages(images, request, winner.provider);
+    const materialized = await materializeImages(images, request, served.provider);
 
     const adaptations: AppliedAdaptations = { ...plan.adaptations };
     if (adaptations.fannedOutFromCount && request.count > 1 && !request.seed) {
@@ -173,8 +178,8 @@ export class GenerationService {
     return {
       result: {
         images: materialized,
-        provider: winner.provider,
-        model: winner.model,
+        provider: served.provider,
+        model: served.model,
         seedUsed: request.seed,
         timings: { queueMs: 0, providerMs, totalMs: Date.now() - startTime },
         cached: anyCached,
@@ -194,7 +199,7 @@ export class GenerationService {
     request: ImageGenerationRequest,
     plan: GenerationPlan,
     index: number,
-  ): Promise<{ images: GeneratedImage[]; cached: boolean }> {
+  ): Promise<{ images: GeneratedImage[]; cached: boolean; provider: string; model: string }> {
     let lastError: unknown;
     const deadline = Date.now() + SUB_JOB_DEADLINE_MS;
 
@@ -232,7 +237,12 @@ export class GenerationService {
         try {
           const result = await provider.generate(subRequest);
           circuitBreaker.recordSuccess(attempt.provider);
-          return { images: result.images, cached: result.cached };
+          return {
+            images: result.images,
+            cached: result.cached,
+            provider: attempt.provider,
+            model: attempt.model,
+          };
         } catch (error) {
           lastError = error;
           const { retryable, delayMs } = classifyFailure(error);
