@@ -33,64 +33,6 @@ const csvList = z
       .filter(Boolean),
   );
 
-/** One entry of the `CUSTOM_BACKENDS` JSON array. */
-const customBackendSchema = z.object({
-  name: z.string().min(1),
-  url: z.string().url(),
-  api_key: z.string().optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-  models: z.array(z.string()).optional(),
-  body_template: z.string().optional(),
-});
-
-export type CustomBackendEntry = z.infer<typeof customBackendSchema>;
-
-/** Parse `CUSTOM_BACKENDS`, reporting a readable error rather than crashing obscurely. */
-const customBackendsList = z
-  .string()
-  .optional()
-  .transform((value, ctx): CustomBackendEntry[] => {
-    if (!value || value.trim() === '') return [];
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(value);
-    } catch (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `CUSTOM_BACKENDS is not valid JSON: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      });
-      return z.NEVER;
-    }
-
-    if (!Array.isArray(parsed)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'CUSTOM_BACKENDS must be a JSON array of backend objects',
-      });
-      return z.NEVER;
-    }
-
-    const entries: CustomBackendEntry[] = [];
-    parsed.forEach((entry, index) => {
-      const result = customBackendSchema.safeParse(entry);
-      if (!result.success) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `CUSTOM_BACKENDS[${index}] is invalid: ${result.error.issues
-            .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
-            .join('; ')}`,
-        });
-        return;
-      }
-      entries.push(result.data);
-    });
-
-    return entries;
-  });
-
 const booleanish = (defaultValue: boolean) =>
   z
     .string()
@@ -115,17 +57,19 @@ const envSchema = z.object({
   CACHE_TTL: positiveInt('CACHE_TTL').transform((v) => v ?? 3600),
   QUEUE_CONCURRENCY: positiveInt('QUEUE_CONCURRENCY').transform((v) => v ?? 5),
 
-  STABILITY_API_KEY: z.string().optional().default(''),
-  STABILITY_API_HOST: z.string().default('https://api.stability.ai'),
-
-  OPENAI_API_KEY: z.string().optional().default(''),
-  OPENAI_BASE_URL: z.string().default('https://api.openai.com/v1'),
-  OPENAI_IMAGE_MODEL: z.string().default('dall-e-3'),
-  OPENAI_EXTRA_MODELS: csvList,
-
-  REPLICATE_API_TOKEN: z.string().optional().default(''),
-
-  CUSTOM_BACKENDS: customBackendsList,
+  // ── The chat-completions backend ─────────────────────────────
+  // RenderMind has exactly one class of upstream: a model that speaks
+  // `/chat/completions` and is *instructed* to answer with an image. There is no native
+  // image provider any more, so these four variables are the whole upstream configuration.
+  CHAT_API_KEY: z.string().optional().default(''),
+  CHAT_BASE_URL: z.string().default('https://api.openai.com/v1'),
+  CHAT_MODEL: z.string().default('gpt-4o'),
+  /** Model used when the request carries input images. Falls back to CHAT_MODEL. */
+  CHAT_VISION_MODEL: z.string().optional(),
+  /** Extra model ids the endpoint accepts, beyond the two above. */
+  CHAT_EXTRA_MODELS: csvList,
+  /** Replaces the built-in "answer with an image" system instruction. */
+  CHAT_SYSTEM_PROMPT: z.string().optional(),
 
   WEBHOOK_SECRET: z.string().optional(),
 
@@ -169,20 +113,14 @@ export interface AppConfig {
     maxConcurrency: number;
   };
   backends: {
-    stability: {
-      apiKey: string;
-      apiHost: string;
-    };
-    openclaw: {
+    chat: {
       apiKey: string;
       baseUrl: string;
       defaultModel: string;
+      visionModel: string;
       extraModels: string[];
+      systemPrompt?: string;
     };
-    replicate: {
-      apiToken: string;
-    };
-    custom: CustomBackendEntry[];
   };
   protocols: {
     anthropicImageBlockMode: 'extension' | 'off';
@@ -256,20 +194,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       maxConcurrency: e.MAX_GENERATION_CONCURRENCY,
     },
     backends: {
-      stability: {
-        apiKey: e.STABILITY_API_KEY,
-        apiHost: e.STABILITY_API_HOST,
+      chat: {
+        apiKey: e.CHAT_API_KEY,
+        baseUrl: e.CHAT_BASE_URL,
+        defaultModel: e.CHAT_MODEL,
+        visionModel: e.CHAT_VISION_MODEL ?? e.CHAT_MODEL,
+        extraModels: e.CHAT_EXTRA_MODELS,
+        systemPrompt: e.CHAT_SYSTEM_PROMPT,
       },
-      openclaw: {
-        apiKey: e.OPENAI_API_KEY,
-        baseUrl: e.OPENAI_BASE_URL,
-        defaultModel: e.OPENAI_IMAGE_MODEL,
-        extraModels: e.OPENAI_EXTRA_MODELS,
-      },
-      replicate: {
-        apiToken: e.REPLICATE_API_TOKEN,
-      },
-      custom: e.CUSTOM_BACKENDS,
     },
     protocols: {
       anthropicImageBlockMode: e.ANTHROPIC_IMAGE_BLOCK_MODE,

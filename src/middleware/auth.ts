@@ -1,18 +1,22 @@
 import { Request, Response, NextFunction } from 'express';
 import { createHash, timingSafeEqual } from 'crypto';
 import { getConfig } from '../config';
-import { toAnthropicError, toOpenAIError } from '../utils/formatAdapters';
+import { toChatError } from '../utils/formatAdapters';
 import { logger } from '../utils/logger';
 
 /**
  * API-key authentication.
  *
  * Fixes found by the audit:
- *   - Only `x-api-key` was read. Every openclaw SDK sends `Authorization: Bearer …`,
+ *   - Only `x-api-key` was read. Every openclaw SDK sends `Authorization: Bearer ***
  *     so a client using the documented idiom received a 401.
  *   - Keys were compared with `Array.includes`, a timing-unsafe comparison.
- *   - An invalid key returned 403; Anthropic uses 401 for a bad key.
+ *   - An invalid key returned 403; the surface now treats a bad key as 401.
  *   - Failures used the native error envelope, which no protocol SDK can parse.
+ *
+ * Every path now speaks the one `/chat` envelope, because the engine exposes exactly
+ * two image endpoints. The per-protocol error mapping was removed with the bridges that
+ * needed it: a single shape means a client cannot be handed an envelope it cannot parse.
  */
 
 /** Paths reachable without authentication. */
@@ -25,41 +29,12 @@ const EXEMPT_PATHS = new Set([
   '/api/v1/backends',
 ]);
 
-/** Which protocol error shape a path speaks. */
-function protocolFor(path: string): 'anthropic' | 'openai' | 'native' {
-  if (path.startsWith('/v1/messages')) return 'anthropic';
-  if (path.startsWith('/v1/images') || path.startsWith('/v1/models')) return 'openai';
-  return 'native';
-}
-
 function sendAuthError(req: Request, res: Response, status: number, message: string): void {
-  const requestId = req.headers['x-request-id'] as string;
-  const protocol = protocolFor(req.path);
-
-  if (protocol === 'anthropic') {
-    res.status(status).json(toAnthropicError(message, status, requestId));
-    return;
-  }
-
-  if (protocol === 'openai') {
-    res
-      .status(status)
-      .json(
-        toOpenAIError(
-          message,
-          status,
-          null,
-          status === 401 ? 'invalid_api_key' : 'permission_error',
-        ),
-      );
-    return;
-  }
+  const requestId = req.headers['x-request-id'] as string | undefined;
 
   res.status(status).json({
-    error: status === 401 ? 'UNAUTHORIZED' : 'FORBIDDEN',
-    message,
-    statusCode: status,
-    requestId,
+    ...toChatError(message, status, null, status === 401 ? 'invalid_api_key' : 'permission_error'),
+    request_id: requestId,
   });
 }
 

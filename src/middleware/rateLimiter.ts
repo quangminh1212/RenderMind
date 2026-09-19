@@ -1,7 +1,7 @@
 import rateLimit from 'express-rate-limit';
 import type { Request, Response } from 'express';
 import { getConfig } from '../config';
-import { toAnthropicError, toOpenAIError } from '../utils/formatAdapters';
+import { toChatError } from '../utils/formatAdapters';
 
 /**
  * Rate limiting.
@@ -13,13 +13,9 @@ import { toAnthropicError, toOpenAIError } from '../utils/formatAdapters';
  *   - `/health` was rate limited, so a liveness probe could be 429'd and trigger a
  *     restart loop for a healthy process.
  *   - A 429 returned the native envelope, which protocol SDKs cannot parse.
+ *
+ * The 429 now uses the one `/chat` envelope, because the engine exposes one surface.
  */
-
-function protocolFor(path: string): 'anthropic' | 'openai' | 'native' {
-  if (path.startsWith('/v1/messages')) return 'anthropic';
-  if (path.startsWith('/v1/images') || path.startsWith('/v1/models')) return 'openai';
-  return 'native';
-}
 
 export function createRateLimiter() {
   const config = getConfig();
@@ -48,25 +44,16 @@ export function createRateLimiter() {
       const retryAfterSeconds = Math.ceil(config.rateLimit.windowMs / 1000);
       res.setHeader('Retry-After', String(retryAfterSeconds));
 
-      const message = 'Too many requests, please try again later.';
-      const protocol = protocolFor(req.path);
-
-      if (protocol === 'anthropic') {
-        res.status(429).json(toAnthropicError(message, 429, req.headers['x-request-id'] as string));
-        return;
-      }
-
-      if (protocol === 'openai') {
-        res.status(429).json(toOpenAIError(message, 429, null, 'rate_limit_exceeded'));
-        return;
-      }
-
-      res.status(429).json({
-        error: 'RATE_LIMITED',
-        message,
-        statusCode: 429,
-        requestId: req.headers['x-request-id'],
-      });
+      res
+        .status(429)
+        .json(
+          toChatError(
+            'Too many requests, please try again later.',
+            429,
+            null,
+            'rate_limit_exceeded',
+          ),
+        );
     },
   });
 }

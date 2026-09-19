@@ -1,13 +1,21 @@
 import { Router } from 'express';
-import generateRoutes from '../routes/v1/generate';
-import batchRoutes from '../routes/v1/batch';
-import statusRoutes from '../routes/v1/status';
-import backendsRoutes from '../routes/v1/backends';
 import healthRoutes from '../routes/health';
-import openaiImagesRoutes from '../adapters/openai/images.router';
-import openaiModelsRoutes from '../adapters/openai/models.router';
-import anthropicMessagesRoutes from '../adapters/anthropic/messages.router';
+import chatRoutes from '../adapters/chat/chat.router';
 
+/**
+ * The public surface.
+ *
+ * RenderMind has exactly two image endpoints, both mounted here at the root:
+ *
+ *   POST /chat    — a text prompt becomes an image
+ *   POST /vision  — a text prompt plus input images becomes an image
+ *
+ * The earlier build exposed four additional surfaces (`/v1/images/generations`,
+ * `/v1/messages`, and the `/api/v1/*` family) because it proxied to native image
+ * providers. Those providers are gone: the engine now drives chat-completions models
+ * only, so those bridges had nothing left to translate to. Keeping them would have
+ * advertised compatibility the engine can no longer honour.
+ */
 const router = Router();
 
 // ─── Health & readiness ─────────────────────────────────────
@@ -16,19 +24,7 @@ const router = Router();
 router.use('/health', healthRoutes);
 router.use(healthRoutes);
 
-// ─── RenderMind native API ──────────────────────────────────
-router.use('/api/v1/generate', generateRoutes);
-router.use('/api/v1/batch', batchRoutes);
-router.use('/api/v1/status', statusRoutes);
-router.use('/api/v1/backends', backendsRoutes);
-
-// ─── Protocol compatibility bridges ─────────────────────────
-// openclaw-compatible clients: POST /v1/images/generations, GET /v1/models.
-// These paths are prefixed so the mount points line up exactly with the real API.
-router.use('/v1/images/generations', openaiImagesRoutes);
-router.use('/v1/models', openaiModelsRoutes);
-
-// Anthropic Claude clients: POST /v1/messages (+ count_tokens).
-router.use('/v1/messages', anthropicMessagesRoutes);
+// ─── Image generation ───────────────────────────────────────
+router.use(chatRoutes);
 
 export default router;

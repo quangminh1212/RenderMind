@@ -43,7 +43,7 @@ export function createApp(): express.Application {
         'Content-Type',
         'Authorization',
         'x-api-key',
-        // Anthropic clients send these; omitting them broke cross-origin preflight.
+        // Clients that send these (Claude Code, Anthropic SDKs) must not hit a CORS wall.
         'anthropic-version',
         'anthropic-beta',
         'x-request-id',
@@ -88,8 +88,8 @@ export function createApp(): express.Application {
           title: 'RenderMind API',
           version: '1.0.0',
           description:
-            'AI image-generation engine. Speaks the openclaw Images API and the Anthropic ' +
-            'Messages API, and routes to configured image providers.',
+            'AI image-generation engine. Turns a text-only chat-completions model into an ' +
+            'image generator, exposed over /chat and /vision.',
           license: { name: 'MIT', url: 'https://opensource.org/licenses/MIT' },
         },
         servers: [{ url: '/', description: 'This server' }],

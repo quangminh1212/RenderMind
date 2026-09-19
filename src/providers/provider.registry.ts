@@ -1,10 +1,7 @@
 import type { ImageProvider } from './provider.interface';
 import type { CapabilityDescriptor } from '../types/capability.types';
 import type { AppConfig } from '../config';
-import { OpenclawProvider } from './openclaw.provider';
-import { StabilityProvider } from './stability.provider';
-import { ReplicateProvider } from './replicate.provider';
-import { CustomProvider } from './custom.provider';
+import { ChatProvider } from './chat.provider';
 import { logger } from '../utils/logger';
 
 /**
@@ -12,6 +9,11 @@ import { logger } from '../utils/logger';
  *
  * Owns instantiation from config and lookup by name. Kept deliberately dumb — no
  * routing decisions live here; those belong to the capability matcher.
+ *
+ * There is exactly one provider class now: a chat-completions model that is instructed
+ * to answer with an image. Native image providers (Stability, Replicate, an images
+ * endpoint) were removed when the engine was retargeted at text-only models. The
+ * registry stays generic so a second class can be added without touching routing.
  */
 export class ProviderRegistry {
   private readonly providers = new Map<string, ImageProvider>();
@@ -45,8 +47,7 @@ export class ProviderRegistry {
    * Capability descriptors for every available provider.
    *
    * Unavailable providers are excluded outright so the matcher cannot select one and
-   * then fail upstream — the audit found the old code advertising a keyless endpoint
-   * as "available" and then 401ing on every request.
+   * then fail upstream — a keyless endpoint must never be advertised as "available".
    */
   capabilityDescriptors(): CapabilityDescriptor[] {
     return this.available().map((p) => p.getCapabilities());
@@ -56,48 +57,27 @@ export class ProviderRegistry {
   static fromConfig(config: AppConfig): ProviderRegistry {
     const providers: ImageProvider[] = [];
 
-    if (config.backends.openclaw.apiKey) {
-      providers.push(
-        new OpenclawProvider({
-          apiKey: config.backends.openclaw.apiKey,
-          baseUrl: config.backends.openclaw.baseUrl,
-          defaultModel: config.backends.openclaw.defaultModel,
-          extraModels: config.backends.openclaw.extraModels,
-        }),
-      );
-    }
-
-    if (config.backends.stability.apiKey) {
-      providers.push(
-        new StabilityProvider({
-          apiKey: config.backends.stability.apiKey,
-          apiHost: config.backends.stability.apiHost,
-        }),
-      );
-    }
-
-    if (config.backends.replicate.apiToken) {
-      providers.push(new ReplicateProvider({ apiToken: config.backends.replicate.apiToken }));
-    }
-
-    // Custom HTTP backends were previously implemented but never instantiated.
-    for (const custom of config.backends.custom) {
-      providers.push(
-        new CustomProvider({
-          name: custom.name,
-          url: custom.url,
-          apiKey: custom.api_key,
-          headers: custom.headers,
-          models: custom.models,
-          bodyTemplate: custom.body_template,
-        }),
-      );
-    }
+    // Register the provider even without a key: it reports itself unavailable, which
+    // gives /api/v1/backends an honest row and makes the startup log name what is
+    // missing, rather than showing an empty list with no explanation.
+    providers.push(
+      new ChatProvider({
+        apiKey: config.backends.chat.apiKey,
+        baseUrl: config.backends.chat.baseUrl,
+        defaultModel: config.backends.chat.defaultModel,
+        visionModel: config.backends.chat.visionModel,
+        extraModels: config.backends.chat.extraModels,
+        systemPrompt: config.backends.chat.systemPrompt,
+      }),
+    );
 
     const registry = new ProviderRegistry(providers);
 
-    logger.info(`Initialized ${providers.length} image provider(s)`, {
+    logger.info(`Initialized ${registry.available().length} provider(s)`, {
       providers: registry.available().map((p) => p.name),
+      ...(registry.available().length === 0
+        ? { hint: 'set CHAT_API_KEY to enable the chat-completions backend' }
+        : {}),
     });
 
     return registry;
