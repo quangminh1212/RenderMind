@@ -1,0 +1,22 @@
+# pnpm project configuration.
+# Required: pnpm >= 12 reads these settings only from this file, not from ~/.npmrc.
+# Single-package project: "packages: []" keeps pnpm from scanning parent directories.
+
+packages: []
+
+autoInstallPeers: true
+strictPeerDependencies: false
+engineStrict: true
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+  '@swc/core': true
+  unrs-resolver: true
+  '@tailwindcss/oxide': true
+  better-sqlite3: true
+  electron: true
+  electron-winstaller: true
+  bufferutil: true
+  utf-8-validate: true
+  '@scarf/scarf': true

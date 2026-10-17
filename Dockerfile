@@ -3,25 +3,25 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src/ ./src/
-RUN npm run build
+RUN pnpm run build
 
 # Run the test suite in the builder, where dev dependencies still exist. The
 # runtime image ships no test files, so running them there would silently find
 # zero tests and report success.
 COPY tests/ ./tests/
-RUN npm test
+RUN pnpm test
 
 # --- Production dependencies ----------------------------------
 FROM node:20-alpine AS deps
 
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev && npm cache clean --force
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile --omit=dev && pnpm store prune
 
 # --- Production stage -----------------------------------------
 FROM node:20-alpine AS production
