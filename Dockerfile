@@ -1,5 +1,5 @@
 # --- Build stage ----------------------------------------------
-FROM node:20-alpine AS builder
+FROM node:26-alpine AS builder
 
 WORKDIR /app
 
@@ -17,14 +17,14 @@ COPY tests/ ./tests/
 RUN pnpm test
 
 # --- Production dependencies ----------------------------------
-FROM node:20-alpine AS deps
+FROM node:26-alpine AS deps
 
 WORKDIR /app
 COPY package.json pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile --omit=dev && pnpm store prune
 
 # --- Production stage -----------------------------------------
-FROM node:20-alpine AS production
+FROM node:26-alpine AS production
 
 # Security: run as a non-root user.
 RUN addgroup -g 1001 -S rendermind \
