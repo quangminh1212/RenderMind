@@ -27,11 +27,13 @@ export function initEngine(): Engine {
     registry,
     generation: new GenerationService(registry, {
       maxConcurrency: config.engine.maxConcurrency,
+      strategy: config.providerStrategy,
     }),
   };
 
   logger.info('Engine initialised', {
-    providers: registry.available().map((p) => p.name),
+    providers: registry.capabilityDescriptors(config.providerStrategy).map((d) => d.provider),
+    strategy: config.providerStrategy,
     maxConcurrency: config.engine.maxConcurrency,
   });
 

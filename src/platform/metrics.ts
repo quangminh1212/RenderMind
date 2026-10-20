@@ -55,14 +55,6 @@ export const artifactsInlined = new Counter({
   registers: [register],
 });
 
-/** Webhook delivery outcomes. */
-export const webhookDeliveries = new Counter({
-  name: 'rendermind_webhook_deliveries_total',
-  help: 'Webhook delivery attempts by outcome',
-  labelNames: ['outcome'],
-  registers: [register],
-});
-
 /** In-flight upstream calls, so queueing/backpressure is observable. */
 export const inFlightGenerations = new Gauge({
   name: 'rendermind_in_flight_generations',

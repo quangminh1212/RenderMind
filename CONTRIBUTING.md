@@ -27,7 +27,7 @@ Please be respectful and constructive in all interactions. We are committed to p
    ```
 3. **Install** dependencies:
    ```bash
-   npm install
+   pnpm install
    ```
 4. **Create** a feature branch:
    ```bash
@@ -39,8 +39,8 @@ Please be respectful and constructive in all interactions. We are committed to p
 ### Prerequisites
 
 - Node.js >= 20.0.0
-- npm >= 10.0.0
-- Redis (optional, for cache/queue features)
+- pnpm >= 10.0.0
+- Redis (optional, for cache features)
 
 ### Environment Variables
 
@@ -53,30 +53,43 @@ cp .env.example .env
 
 ```bash
 # Start development server with hot reload
-npm run dev
+pnpm run dev
 
 # Run tests
-npm test
+pnpm test
 
 # Run linter
-npm run lint
+pnpm run lint
 
 # Type check
-npm run typecheck
+pnpm run typecheck
 ```
 
 ## Project Structure
 
 ```
 src/
-├── config/          # Configuration and environment
-├── middleware/       # Express middleware (error handling, validation, etc.)
-├── routes/          # API route handlers
-├── services/        # Business logic and backend integrations
-│   └── backends/    # Image generation backend implementations
-├── types/           # TypeScript type definitions
-└── utils/           # Utility functions
+├── adapters/          # Inbound protocol translation
+│   └── chat/          # /chat and /vision wire format → canonical request
+├── config/            # Configuration and environment validation
+├── engine/            # Canonical core
+│   ├── capability.matcher   # Provider selection and request adaptation
+│   ├── generation.service   # Plan-driven dispatch, concurrency, failover
+│   └── errors               # Typed error hierarchy
+├── middleware/         # Express middleware (auth, errors, rate limiting, etc.)
+├── platform/          # Infrastructure: artifact store, HTTP resilience, metrics
+├── providers/         # Outbound adapters: talk to the chat model
+│   ├── chat.provider        # Instructs a model to answer with an image
+│   ├── prompt.builder       # Folds intent into instruction text
+│   └── provider.interface   # ImageProvider contract
+├── routes/            # Health and readiness endpoints
+├── services/          # Platform services (cache)
+├── types/             # TypeScript type definitions
+└── utils/             # Utility functions
 ```
+
+The dependency direction is one-way: **adapters → engine → providers**. Adapters never
+import providers, and providers never import adapters.
 
 ## Making Changes
 
@@ -92,33 +105,28 @@ src/
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-feat: add new backend support for XYZ
+feat: add new provider class for XYZ
 fix: resolve cache invalidation issue
 docs: update API documentation
-refactor: simplify backend selection logic
+refactor: simplify provider selection logic
 test: add unit tests for cache service
 chore: update dependencies
 ```
 
-### Adding a New Backend
+### Adding a Provider
 
-1. Create a new file in `src/services/backends/`:
-   ```typescript
-   import { BaseBackend } from './base.backend';
-   
-   export class NewBackend extends BaseBackend {
-     readonly name = 'new-backend';
-     readonly displayName = 'New Backend';
-     
-     protected async generateImage(options: ImageGenerationOptions) {
-       // Implementation
-     }
-   }
-   ```
-2. Register it in `src/services/backend.service.ts`
-3. Add config in `src/config/`
-4. Add environment variables to `.env.example`
-5. Write tests
+A provider is an outbound adapter to one image service. Providers know nothing about
+protocols or adapters: they receive a canonical request and return a canonical result.
+
+1. Implement `ImageProvider` from `src/providers/provider.interface.ts`.
+2. Declare an accurate `CapabilityDescriptor`. Accuracy matters more than optimism: an
+   over-claiming descriptor produces requests the provider cannot honour, whereas an
+   under-claiming one only makes the matcher avoid it.
+3. Throw `ProviderError` on failure with the upstream status preserved, so the engine can
+   classify retryability. A bare `Error` is treated as retryable and loses that detail.
+4. Register it in `ProviderRegistry.fromConfig`.
+5. Add unit tests under `tests/unit/providers/` that stub fetch and assert both the outgoing
+   payload and the error classification.
 
 ## Testing
 
@@ -126,13 +134,13 @@ chore: update dependencies
 
 ```bash
 # Run all tests
-npm test
+pnpm test
 
 # Run tests in watch mode
-npm run test:watch
+pnpm run test:watch
 
 # Run with coverage
-npm run test:coverage
+pnpm run test:coverage
 ```
 
 ### Writing Tests
@@ -163,9 +171,9 @@ describe('myFunction', () => {
 2. **Write** or update tests for your changes
 3. **Ensure** all checks pass:
    ```bash
-   npm run typecheck
-   npm run lint
-   npm test
+   pnpm run typecheck
+   pnpm run lint
+   pnpm test
    ```
 4. **Push** your branch and create a Pull Request
 5. **Fill** out the PR template completely
@@ -175,7 +183,6 @@ describe('myFunction', () => {
 
 - Keep PRs focused on a single change
 - Write clear, descriptive titles
-- Include screenshots for UI changes
 - Reference related issues
 - Keep commits atomic and well-described
 
@@ -190,83 +197,11 @@ describe('myFunction', () => {
 
 ### Naming Conventions
 
-- **Files**: `kebab-case.ts` (e.g., `backend.service.ts`)
-- **Classes**: `PascalCase` (e.g., `BackendService`)
-- **Functions**: `camelCase` (e.g., `generateImage`)
-- **Constants**: `UPPER_SNAKE_CASE` (e.g., `DEFAULT_TIMEOUT`)
-- **Interfaces**: `PascalCase` with descriptive names (e.g., `GenerateRequest`)
-
-### Imports
-
-```typescript
-// External packages
-import express from 'express';
-import { z } from 'zod';
-
-// Internal modules (use @ alias)
-import { AppConfig } from '@/config';
-import { logger } from '@/utils/logger';
-```
-
-## Questions?
-
-Feel free to open an issue for any questions about contributing!
-
-## Adding a provider
-
-A provider is an outbound adapter to one image service. The rule that keeps this codebase
-maintainable is that providers know nothing about protocols or adapters. A provider
-receives a canonical request and returns a canonical result.
-
-1. Implement ImageProvider from src/providers/provider.interface.ts.
-2. Declare an accurate CapabilityDescriptor. Accuracy matters more than optimism: an
-   over-claiming descriptor produces requests the provider cannot honour, whereas an
-   under-claiming one only makes the matcher avoid it.
-3. Throw ProviderError on failure with the upstream status preserved, so the engine can
-   classify retryability. A bare Error is treated as retryable and loses that detail.
-4. Register it in ProviderRegistry.fromConfig.
-5. Add unit tests under tests/unit/providers/ that stub fetch and assert both the outgoing
-   payload and the error classification.
-
-## Changing the inbound adapter
-
-There is one adapter (`src/adapters/chat/`). It validates the wire body and translates it
-into the canonical model. It contains no business logic and must never import a provider.
-
-Two rules are not negotiable:
-
-- **Return the one error envelope.** Route errors through `toChatError`, and add an
-  integration test asserting the envelope for both a validation failure and an auth
-  failure. A client must never be handed a shape it cannot parse.
-- **Do not silently degrade.** If you cannot honour something (a requested response
-  format, a requested size), either implement it or fail with an error that names it.
-  Never return a successful response whose shape differs from what was requested.
-
-## Response-shape tests
-
-There is one response shape, so there is one place to assert it:
-`tests/unit/utils/formatAdapters.test.ts` pins the exact bytes emitted, including the
-strictness rule that a requested base64 payload is never substituted with a URL.
-
-When you change the response shape, update that suite. A shape asserted only in the route
-tests can drift without any test noticing.
-
-## Before opening a pull request
-
-Run the full gate:
-
-    npm run verify
-
-That runs typecheck, lint and the test suite. Then, if your change touches a response
-shape:
-
-    npm run test:coverage   # must meet the engine and provider thresholds
-
-For a change to the request path, start the server and exercise both endpoints by hand:
-
-    npm run dev
-    curl -X POST localhost:3000/chat -H 'Content-Type: application/json' \
-      -d '{"prompt":"a red apple"}'
+- **Files**: `kebab-case.ts` (e.g., `chat.provider.ts`)
+- **Classes**: `PascalCase` (e.g., `ChatProvider`)
+- **Functions**: `camelCase` (e.g., `buildImageInstruction`)
+- **Constants**: `UPPER_SNAKE_CASE` (e.g., `MAX_INLINE_BYTES`)
+- **Interfaces**: `PascalCase` with descriptive names (e.g., `ChatResponse`)
 
 ## Coding standards
 

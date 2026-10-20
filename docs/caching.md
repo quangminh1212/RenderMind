@@ -1,4 +1,4 @@
-# Caching and generation records
+# Caching
 
 ## The cache key
 
@@ -38,8 +38,7 @@ call, so their keys differ.
 
 A cache cannot distinguish "unavailable" from "miss" if both are reported as null, and
 that ambiguity caused a real bug: a Redis blip produced a `200 completed` whose record was
-never persisted, so `GET /api/v1/status/:id` then 404'd for an id the server had just
-handed out.
+never persisted, so a status lookup then 404'd for an id the server had just handed out.
 
 Reads now return one of three outcomes:
 
@@ -50,28 +49,10 @@ Reads now return one of three outcomes:
 ## In-memory fallback
 
 Redis is **optional**. When it is absent or unreachable, writes go to an in-process map
-with TTL eviction, and reads fall back to it. This is what makes generation records
-retrievable without Redis.
+with TTL eviction, and reads fall back to it. This is what makes the service functional
+without Redis.
 
 The consequences are bounded deliberately: the fallback is per-process, so it does not
-survive a restart and is not shared between replicas. It exists so that the documented
-flow (generate, then poll status) works on a single-instance deployment without Redis. It
-is not a durability guarantee. Run Redis if you need one.
-
-## Generation records
-
-A record moves through an explicit state machine:
-
-    queued -> running -> succeeded
-                      -> partial    (some of n sub-jobs failed)
-                      -> failed
-                      -> cancelled
-
-`partial` exists because the previous status vocabulary could not express it. A batch in
-which 19 of 20 prompts succeeded was reported as `failed`, hiding the 19 images that were
-actually produced.
-
-Each record also carries a monotonically increasing `version`, so a concurrent update
-cannot silently clobber another, and a client can tell whether the state it read is still
-current. It also records which provider was chosen, what adaptations were applied, and the
-webhook delivery outcome.
+survive a restart and is not shared between replicas. It exists so that the service works
+on a single-instance deployment without Redis. It is not a durability guarantee. Run Redis
+if you need one.

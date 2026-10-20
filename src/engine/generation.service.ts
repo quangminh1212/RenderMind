@@ -5,7 +5,9 @@ import type {
   ImageGenerationResult,
 } from '../types/canonical.types';
 import type { GenerationPlan } from '../types/capability.types';
-import type { ProviderRegistry } from '../providers/provider.registry';
+import type { ProviderRegistry, ProviderStrategy } from '../providers/provider.registry';
+import { allowsProvider } from '../providers/provider.registry';
+import type { ImageProvider } from '../providers/provider.interface';
 import { buildPlan } from './capability.matcher';
 import { materializeImages } from '../platform/artifact.store';
 import {
@@ -56,6 +58,51 @@ const MAX_RETRY_WAIT_MS = 5000;
  */
 const SUB_JOB_DEADLINE_MS = 20000;
 
+/**
+ * Distinct compositional directions for a fan-out.
+ *
+ * Why this exists: `count: 3` used to mean three calls with the same prompt, and the chat
+ * provider declares `seed: false` — it cannot send a seed upstream at all, so the "vary the
+ * seed" branch below was a no-op and three callers got three copies of one drawing. A
+ * seed the provider cannot honour is not variation; it is the appearance of it.
+ *
+ * Stating the intended difference in words is what a text model can actually act on. The
+ * directions are deliberately distinct *kinds* of change — composition, mood, palette,
+ * viewpoint, scale, lighting — rather than three paraphrases of one idea, because asking for
+ * "a slightly different version" reliably yields the same picture again.
+ *
+ * A pinned seed still varies the prompt. The seed cannot be honoured and the caller asked
+ * for N images; returning N identical results would be a worse answer than returning N that
+ * differ. The engine discloses the fan-out in `AppliedAdaptations` either way.
+ */
+const VARIATION_DIRECTIONS = [
+  'Emphasize a different composition and framing than the other variants.',
+  'Take a different approach to mood, colour palette and lighting than the other variants.',
+  'Choose a distinctly different viewpoint, angle and level of detail than the other variants.',
+  'Vary the scale and density of the elements, and the arrangement of the background.',
+  'Explore a different visual style and rendering technique for the same subject.',
+  'Reframe the subject with different negative space and a different sense of depth.',
+];
+
+/**
+ * Prefix a prompt with a distinct direction for one sub-job of a fan-out.
+ *
+ * A single request is left byte-identical: there is nothing to distinguish it from, and
+ * rewriting the prompt would change the behaviour of the overwhelmingly common case.
+ *
+ * @param prompt the caller's prompt, unchanged for `count === 1`
+ * @param index  zero-based sub-job index
+ * @param count  the caller's requested image count
+ */
+export function varyPrompt(prompt: string, index: number, count: number): string {
+  if (count <= 1) return prompt;
+
+  const direction = VARIATION_DIRECTIONS[index % VARIATION_DIRECTIONS.length];
+  return `Variant ${index + 1} of ${count}. ${direction}\n\nSubject: ${prompt}`;
+}
+
+/** Wall-clock ceiling for a single sub-job across every attempt in its plan. */
+
 /** A simple counting semaphore, so total in-flight calls stay bounded. */
 export class Semaphore {
   private available: number;
@@ -94,15 +141,38 @@ export class Semaphore {
 export class GenerationService {
   private readonly semaphore: Semaphore;
   private readonly registry: ProviderRegistry;
+  /**
+   * Which provider class this deployment is willing to route to.
+   *
+   * Held here rather than baked into the registry so the registry stays a plain container
+   * and the routing policy is visible at the one place that resolves a plan.
+   */
+  private readonly strategy: ProviderStrategy;
 
-  constructor(registry: ProviderRegistry, options: GenerationServiceOptions) {
+  constructor(
+    registry: ProviderRegistry,
+    options: GenerationServiceOptions & { strategy?: ProviderStrategy },
+  ) {
     this.registry = registry;
     this.semaphore = new Semaphore(options.maxConcurrency);
+    this.strategy = options.strategy ?? 'auto';
   }
 
   /** Expose queue depth for readiness/observability. */
   get queueStats(): { available: number; queued: number } {
     return this.semaphore.stats;
+  }
+
+  /**
+   * Providers this deployment is willing and able to route to.
+   *
+   * The one place that answers "who can serve a request at all", so the readiness probe,
+   * the empty-registry check and the plan resolution cannot disagree about it.
+   */
+  routableProviders(): ImageProvider[] {
+    return this.registry
+      .available()
+      .filter((provider) => allowsProvider(this.strategy, provider.name));
   }
 
   /**
@@ -114,12 +184,19 @@ export class GenerationService {
   async generate(request: ImageGenerationRequest): Promise<GenerationOutcome> {
     const startTime = Date.now();
 
-    if (this.registry.available().length === 0) {
+    // "Routable" is not the same as "available": a provider may be perfectly healthy but
+    // forbidden by PROVIDER_STRATEGY, and reporting it as configured would advertise a
+    // service whose every generation fails with a capability gap.
+    if (this.routableProviders().length === 0) {
       throw new NoProviderAvailableError();
     }
 
     // Breakers take providers out of rotation before a call is wasted on them.
-    const registered = this.registry.capabilityDescriptors();
+    //
+    // The strategy filter is applied to the *descriptors* rather than here, so that
+    // "which providers may serve this request" is answered in one place and the matcher
+    // keeps its pure (request × descriptors) contract.
+    const registered = this.registry.capabilityDescriptors(this.strategy);
     const descriptors = registered.map((d) => ({
       ...d,
       status: circuitBreaker.canAttempt(d.provider) ? d.status : ('unavailable' as const),
@@ -148,12 +225,35 @@ export class GenerationService {
       throw new NoProviderAvailableError(`Provider "${winner.provider}" is no longer registered`);
     }
 
-    // ── Fan out ────────────────────────────────────────────────
-    // Distinct seeds per sub-job when the caller did not pin one, so n>1 produces
-    // n *different* images rather than the same image n times (the old behaviour).
-    const subJobs = Array.from({ length: request.count }, (_, index) => index);
+    // ── Fan out, or ask for the batch natively ─────────────────
+    // One sub-job per requested image is only correct for a provider that cannot take a
+    // batch. The winner is known here, so honouring its declaration is what makes
+    // `features.batch: true` mean something: a native endpoint receiving `n: 3` produces
+    // three images in one call, whereas fanning out would make three calls and defeat the
+    // capability the matcher just selected it for.
+    const winnerDescriptor = descriptors.find((d) => d.provider === winner.provider);
+    const nativeBatch = winnerDescriptor?.features.batch === true;
 
-    const settled = await Promise.all(subJobs.map((index) => this.runSubJob(request, plan, index)));
+    const subJobs = nativeBatch ? [0] : Array.from({ length: request.count }, (_, index) => index);
+
+    // How many images the *request* wants, which is both the variation base for a fan-out
+    // and the `n` a native batch is asked for.
+    //
+    // Kept separate from `producedByThisJob` on purpose: a fan-out sub-job produces one
+    // image but must still be told it is variant 2 of 3, or every sub-job computes the same
+    // "variant 1 of 1" prompt and the distinct-direction machinery silently collapses into
+    // three identical requests. That regression is exactly what a batch-variation test
+    // exists to catch, and passing the per-job count here would reintroduce it.
+    // Native image APIs already create distinct samples from one `n` request. The
+    // language-model-only fan-out needs the variation prefix, but an image model would
+    // otherwise be asked to draw the words "Variant 1 of N" into the picture.
+    const variationBase = nativeBatch ? 1 : request.count;
+
+    const settled = await Promise.all(
+      subJobs.map((index) =>
+        this.runSubJob(request, plan, index, nativeBatch ? request.count : 1, variationBase),
+      ),
+    );
 
     const images: GeneratedImage[] = settled.flatMap((s) => s.images);
     const anyCached = settled.some((s) => s.cached);
@@ -168,10 +268,17 @@ export class GenerationService {
     const materialized = await materializeImages(images, request, served.provider);
 
     const adaptations: AppliedAdaptations = { ...plan.adaptations };
-    if (adaptations.fannedOutFromCount && request.count > 1 && !request.seed) {
+    if (adaptations.fannedOutFromCount && request.count > 1) {
+      // Disclosed honestly. The previous note claimed a distinct seed guaranteed variation,
+      // which was untrue for an upstream that cannot accept a seed at all — the images came
+      // back identical and the caller was told they would differ.
       adaptations.notes = [
         ...(adaptations.notes ?? []),
-        'each image used a distinct seed to guarantee variation',
+        request.seed === undefined
+          ? 'each image was asked for with a distinct compositional direction to ' +
+            'guarantee variation'
+          : 'each image was asked for with a distinct compositional direction; the pinned ' +
+            'seed was varied per image because the upstream cannot honour a seed',
       ];
     }
 
@@ -199,6 +306,8 @@ export class GenerationService {
     request: ImageGenerationRequest,
     plan: GenerationPlan,
     index: number,
+    producedByThisJob: number,
+    variationBase: number,
   ): Promise<{ images: GeneratedImage[]; cached: boolean; provider: string; model: string }> {
     let lastError: unknown;
     const deadline = Date.now() + SUB_JOB_DEADLINE_MS;
@@ -218,17 +327,27 @@ export class GenerationService {
       }
 
       const provider = this.registry.get(attempt.provider);
-      if (!provider) continue;
+      // A plan attempt for a provider the strategy forbids should be unreachable — the
+      // descriptors were already filtered — but resolving it through the same predicate
+      // keeps the two from drifting if a plan is ever built from unfiltered descriptors.
+      if (!provider || !allowsProvider(this.strategy, provider.name)) continue;
 
-      // One sub-job produces exactly one image; the fan-out supplies the count.
+      // How many images this attempt should ask for, and how the prompt is varied.
+      //
+      // `producedByThisJob` is the `n` sent upstream: 1 per fan-out sub-job, or the whole
+      // count for a native batch. `variationBase` is how many variants exist in total, and
+      // is what makes each fan-out sub-job a *different* request; it is 1 for a native
+      // batch, which is why the batch's prompt is left alone — an image model handed
+      // "Variant 1 of 3. Emphasize a different composition…" draws the words.
       const subRequest: ImageGenerationRequest = {
         ...request,
-        count: 1,
+        count: producedByThisJob,
         provider: attempt.provider,
         model: attempt.model,
         // Vary the seed only when the caller did not pin one, so an explicit seed
         // remains reproducible.
         seed: request.seed === undefined ? undefined : request.seed + index,
+        prompt: varyPrompt(request.prompt, index, variationBase),
       };
 
       // Bounded retry of this provider, then fail over to the next plan attempt.

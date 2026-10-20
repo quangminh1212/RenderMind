@@ -33,6 +33,16 @@ import { logger } from '../../utils/logger';
 
 const router = Router();
 
+// Do not let an upstream return an arbitrarily large client-facing delay. The engine
+// already caps its own internal wait; this cap keeps the public Retry-After contract
+// equally bounded while preserving useful provider guidance.
+const MAX_RETRY_AFTER_SECONDS = 86_400;
+
+function safeRetryAfterSeconds(value: number): number | undefined {
+  if (!Number.isFinite(value)) return undefined;
+  return Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(0, Math.floor(value)));
+}
+
 /** Build the shared handler for one surface. */
 function handler(options: { withImages: boolean }) {
   return async (req: Request, res: Response): Promise<void> => {
@@ -71,6 +81,7 @@ function handler(options: { withImages: boolean }) {
           created: Math.floor(Date.now() / 1000),
           generationId: req.generationId ?? 'gen_unknown',
           includeMetadata: getConfig().protocols.openaiResponseMetadata,
+          format: translated.request.output.format,
         }),
       );
     } catch (error) {
@@ -120,8 +131,12 @@ export function sendGenerationError(res: Response, error: unknown, req?: Request
               ? 504
               : 502;
 
-    if (error.retryAfterSeconds !== undefined) {
-      res.setHeader('Retry-After', String(error.retryAfterSeconds));
+    const retryAfterSeconds =
+      error.retryAfterSeconds === undefined
+        ? undefined
+        : safeRetryAfterSeconds(error.retryAfterSeconds);
+    if (retryAfterSeconds !== undefined) {
+      res.setHeader('Retry-After', String(retryAfterSeconds));
     }
 
     logger.warn('Generation error surfaced to client', {

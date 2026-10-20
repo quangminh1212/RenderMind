@@ -161,6 +161,20 @@ describe('ChatProvider capabilities', () => {
     expect(provider({ visionModel: '' }).getCapabilities().features.imageToImage).toBe(false);
   });
 
+  it('does not infer vision support from the default-model fallback', () => {
+    expect(
+      new ChatProvider({
+        apiKey: 'test-key',
+        baseUrl: 'https://api.example.com/v1',
+        defaultModel: 'text-only-model',
+      }).getCapabilities().features.imageToImage,
+    ).toBe(false);
+  });
+
+  it('declares SVG as an explicit output format', () => {
+    expect(provider().getCapabilities().models[0].outputFormats).toContain('svg');
+  });
+
   it('discloses unsupported native hints rather than pretending', () => {
     const features = provider().getCapabilities().features;
     expect(features.steps).toBe(false);

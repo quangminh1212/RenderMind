@@ -129,6 +129,26 @@ describe('POST /chat', () => {
     expect(res.body.error.type).toBe('server_error');
   });
 
+  it('caps an upstream Retry-After before returning it to the caller', async () => {
+    useFakeEngine([
+      new FakeProvider('retry-test', {
+        error: new ProviderError({
+          provider: 'retry-test',
+          message: 'busy',
+          status: 429,
+          retryAfterSeconds: Number.MAX_SAFE_INTEGER,
+          retryable: false,
+        }),
+      }),
+    ]);
+    app = createApp();
+
+    const res = await request(app).post('/chat').send({ prompt: 'x' });
+
+    expect(res.status).toBe(429);
+    expect(res.headers['retry-after']).toBe('86400');
+  });
+
   it('reports a client-side upstream error as 400', async () => {
     useFakeEngine([
       new FakeProvider('fake', {

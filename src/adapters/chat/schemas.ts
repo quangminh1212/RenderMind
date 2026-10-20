@@ -58,7 +58,12 @@ export const ChatRequestSchema = z
     negative_prompt: z.string().max(4000).optional(),
     seed: z.number().int().min(0).optional(),
     count: z.number().int().min(1).max(10).optional(),
-    format: z.enum(['png', 'jpeg', 'webp']).optional(),
+    /**
+     * Output container. `svg` must be asked for explicitly: the engine draws the model's
+     * vector output down to PNG by default so that a caller who expects a bitmap never
+     * receives a document instead. See `ImageFormat` in the canonical types.
+     */
+    format: z.enum(['png', 'jpeg', 'webp', 'svg']).optional(),
     /** Delivery: `base64` inlines the bytes, `url` returns a URL (or a data URI). */
     response_format: z.enum(['b64_json', 'url']).optional(),
   })

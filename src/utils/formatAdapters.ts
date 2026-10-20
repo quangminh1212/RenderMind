@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import type { GeneratedImage, ImageGenerationResult } from '../types/canonical.types';
+import type { GeneratedImage, ImageFormat, ImageGenerationResult } from '../types/canonical.types';
 
 /**
  * Response builders translating canonical results into the client-facing shape.
@@ -21,6 +21,17 @@ export interface ChatImageDatum {
   url?: string;
   mime: string;
   revised_prompt?: string;
+  /**
+   * The source vector document, when the image was drawn as SVG.
+   *
+   * Present only when the caller explicitly asked for `format: 'svg'`. It is emitted
+   * alongside — never instead of — the base64 payload, so a client written against the old
+   * shape keeps working while one that wants editable artwork can have it.
+   *
+   * This field is the reason the format is opt-in: it is a document, not a bitmap, and a
+   * client that renders `base64` blindly would otherwise be handed something executable.
+   */
+  svg?: string;
 }
 
 export interface ChatResponse {
@@ -45,6 +56,14 @@ export interface ChatResponseOptions {
   created: number;
   generationId: string;
   includeMetadata: boolean;
+  /**
+   * The container the caller asked for.
+   *
+   * Needed because `mime` alone cannot express intent: a rasterized image is always
+   * `image/png` whether or not the caller wanted it, whereas the vector source is only
+   * theirs to receive if they asked for `svg`.
+   */
+  format?: ImageFormat;
 }
 
 /**
@@ -63,12 +82,23 @@ export function toChatResponse(
 
     if (options.delivery === 'url') {
       if (image.url) datum.url = image.url;
+      // A vector image may arrive with only its document, because the provider delivered
+      // the markup rather than a raster. Encoding it here is what lets url delivery work
+      // for the svg format at all — without this arm the response would be a datum with a
+      // mime and no payload, which reads to a client as an empty image.
       else if (image.base64) datum.url = `data:${image.mime};base64,${image.base64}`;
+      else if (image.svg) {
+        datum.url = `data:${image.mime};base64,${Buffer.from(image.svg, 'utf8').toString('base64')}`;
+      }
     } else if (image.base64) {
       datum.base64 = image.base64;
     }
 
     if (image.revisedPrompt) datum.revised_prompt = image.revisedPrompt;
+    // The vector source travels only with an explicit svg request. It is already validated
+    // by the time it reaches this builder; passing it through unvalidated would put an
+    // executable document in front of a browser.
+    if (image.svg && options.format === 'svg') datum.svg = image.svg;
     return datum;
   });
 
@@ -134,17 +164,39 @@ export function toChatError(
   };
 }
 
-/** Whether every requested image carries a payload in the requested delivery mode. */
+/**
+ * Whether every requested image carries a payload in the requested delivery mode.
+ *
+ * Presence alone is not enough: an image whose `mime` contradicts the container the caller
+ * asked for is a substitution, not a delivery. That check used to be missing, so a caller
+ * who requested PNG and received something else was reported as satisfied.
+ */
 export function satisfiesDelivery(
   result: ImageGenerationResult,
   delivery: 'base64' | 'url',
   count: number,
+  format?: ImageFormat,
 ): boolean {
   if (result.images.length < count) return false;
-  return result.images.every((image) =>
-    delivery === 'base64' ? Boolean(image.base64) : Boolean(image.url ?? image.base64),
-  );
+
+  return result.images.every((image) => {
+    // A validated vector document is a payload in its own right: the provider delivers the
+    // markup instead of a raster when `format: 'svg'` was asked for, so counting only
+    // base64/url would report a correct delivery as missing.
+    const carries =
+      Boolean(image.svg) ||
+      (delivery === 'base64' ? Boolean(image.base64) : Boolean(image.url ?? image.base64));
+    if (!carries) return false;
+    // Only the raster/vector distinction is enforced. A model that returned a JPEG for a
+    // PNG request is not a contract violation worth failing on — same kind of artifact —
+    // whereas a document delivered under a bitmap request is.
+    if (!format) return true;
+    return format === 'svg' ? image.mime === VECTOR_MIME : image.mime !== VECTOR_MIME;
+  });
 }
+
+/** The media type each requested format should arrive as, at the type level. */
+const VECTOR_MIME = 'image/svg+xml';
 
 /** A stable content hash for an image, used when a caller wants to dedupe results. */
 export function imageFingerprint(image: GeneratedImage): string {

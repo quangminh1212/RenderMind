@@ -20,8 +20,8 @@ the smallest reproduction you have. We aim to acknowledge within 72 hours.
 RenderMind is a proxy holding credentials to paid upstream services. The primary risks:
 
 1. **Credential exposure.** An open instance spends the operator's provider credits.
-2. **Server-side request forgery.** Webhook delivery and provider-supplied image URLs are
-   both outbound requests derived from request data.
+2. **Server-side request forgery.** Provider-supplied image URLs are fetched when
+   base64 delivery is requested, creating an outbound request derived from upstream data.
 3. **Resource exhaustion.** Image generation is expensive and slow.
 
 ## Controls in place
@@ -39,13 +39,21 @@ RenderMind is a proxy holding credentials to paid upstream services. The primary
 
 ### SSRF
 
-Webhook delivery validates the scheme and blocks loopback, link-local, private ranges and
-cloud metadata addresses (169.254.169.254), including IPv6 equivalents.
+Provider image URLs (fetched for base64 inlining) are validated before fetching:
+- Only http and https schemes are allowed.
+- Loopback and unspecified addresses (127.x.x.x, ::1, ::) are blocked, including
+  IPv4-mapped IPv6 spellings.
+- Link-local, unique-local and deprecated site-local addresses (169.254.x.x, fe80::,
+  fc00::/7, fec0::/10) are blocked.
+- Private ranges (10.x, 172.16-31.x, 192.168.x) are blocked.
+- Carrier-grade NAT (100.64-127.x) and benchmarking (198.18-19.x) ranges are blocked.
+- Cloud metadata endpoints (169.254.169.254, metadata.google.internal) are blocked.
+- Redirects are followed manually, with every target revalidated and a three-hop limit.
 
 **Known limitation:** the check inspects the hostname string and does not resolve DNS. A
 domain under an attacker's control that resolves to a link-local address therefore passes
 the filter. Fixing this requires resolving and pinning the address before connecting. This
-is tracked as future work; until then, treat webhook URLs as trusted input.
+is tracked as future work; until then, treat provider image URLs as semi-trusted input.
 
 ### Resource bounds
 
@@ -55,6 +63,7 @@ is tracked as future work; until then, treat webhook URLs as trusted input.
 - A per-sub-job deadline bounds how long one request can hold a connection, with waits
   capped so an upstream Retry-After cannot stall it indefinitely.
 - Request bodies are size-limited.
+- Both URL-fetched and inline base64 images are subject to a 25 MiB size limit.
 
 ### Secrets
 
@@ -62,6 +71,13 @@ is tracked as future work; until then, treat webhook URLs as trusted input.
   Free-text scrubbing removes key-shaped strings and bearer tokens.
 - Base64 image payloads are truncated before logging, so user content is not written to
   log storage.
+
+### Transport
+
+- CORS `allowedHeaders` dynamically includes the configured API key header name, so a
+  custom header is not silently blocked by preflight.
+- `TRUST_PROXY_HOPS` is clamped to [0, 10] to prevent misconfiguration expanding the
+  trusted forwarding chain beyond a sane range.
 
 ## Deployment checklist
 
@@ -77,6 +93,6 @@ is tracked as future work; until then, treat webhook URLs as trusted input.
 
 ## Dependency hygiene
 
-The runtime dependency set is audited in CI with `npm audit --omit=dev --audit-level=high`
+The runtime dependency set is audited in CI with `pnpm audit --omit=dev --audit-level=high`
 and must stay clean. Development-toolchain advisories are visible in the same run so they
 cannot be ignored, but they do not block a release.

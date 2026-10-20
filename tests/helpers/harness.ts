@@ -3,6 +3,7 @@ import express from 'express';
 import { setEngine, type Engine } from '../../src/engine';
 import { GenerationService } from '../../src/engine/generation.service';
 import { ProviderRegistry } from '../../src/providers/provider.registry';
+import type { ProviderStrategy } from '../../src/providers/provider.registry';
 import type { ImageProvider } from '../../src/providers/provider.interface';
 import type {
   ImageGenerationRequest,
@@ -10,6 +11,7 @@ import type {
 } from '../../src/types/canonical.types';
 import type { CapabilityDescriptor } from '../../src/types/capability.types';
 import { loadConfig, setConfig } from '../../src/config';
+import { ChatProvider } from '../../src/providers/chat.provider';
 
 /**
  * Shared test harness.
@@ -102,7 +104,18 @@ export class FakeProvider implements ImageProvider {
   }
 
   getCapabilities(): CapabilityDescriptor {
-    return fakeDescriptor({ provider: this.name, ...this.behaviour.descriptor });
+    // A fake answers in one call, so it keeps the base descriptor's `batch: false` unless a
+    // test explicitly claims otherwise. The engine reads that flag to choose between a
+    // native batch and a fan-out, so a fake that overclaimed would collapse a count>1
+    // fan-out into a single call and quietly change what the surrounding test proves.
+    return fakeDescriptor({
+      provider: this.name,
+      ...this.behaviour.descriptor,
+      features: {
+        ...fakeDescriptor().features,
+        ...this.behaviour.descriptor?.features,
+      },
+    });
   }
 
   async generate(request: ImageGenerationRequest): Promise<ImageGenerationResult> {
@@ -139,14 +152,79 @@ export class FakeProvider implements ImageProvider {
 }
 
 /** Install an engine backed by the supplied providers. */
-export function useFakeEngine(providers: ImageProvider[]): Engine {
+export function useFakeEngine(
+  providers: ImageProvider[],
+  strategy: ProviderStrategy = 'auto',
+): Engine {
   const registry = new ProviderRegistry(providers);
   const engine: Engine = {
     registry,
-    generation: new GenerationService(registry, { maxConcurrency: 4 }),
+    generation: new GenerationService(registry, { maxConcurrency: 4, strategy }),
   };
   setEngine(engine);
   return engine;
+}
+
+/**
+ * A chat fake describing itself the way the production `ChatProvider` does.
+ *
+ * Needed wherever both provider classes are present and the chat one is only a fallback:
+ * the routing rules key off the *name* and the declared capabilities, so a fallback that
+ * described itself as a generic fake — output formats `png` only, no `svg`, no
+ * image-to-image — would make a test pass or fail for reasons unrelated to what it claims
+ * to be proving.
+ */
+export function chatFakeForNative(): FakeProvider {
+  return new FakeProvider('chat', {
+    descriptor: {
+      displayName: 'Chat-completions model (image via instruction)',
+      models: [
+        {
+          id: 'test-model',
+          aspectRatios: [],
+          sizes: { kind: 'range', min: 64, max: 4096, multiple: 8 },
+          qualityLevels: [],
+          outputFormats: ['png', 'jpeg', 'webp', 'svg'],
+        },
+      ],
+      features: {
+        negativePrompt: false,
+        seed: false,
+        steps: false,
+        guidanceScale: false,
+        quality: false,
+        style: false,
+        batch: false,
+        imageToImage: true,
+        inpainting: false,
+        revisedPrompt: true,
+        nativeBase64: true,
+        nativeUrl: true,
+      },
+      limits: { maxBatch: 1, maxPromptChars: 32000, maxReferenceImages: 4, timeoutMs: 30000 },
+      p50LatencyMs: 20000,
+    },
+  });
+}
+
+/**
+ * The production `ChatProvider`, wired for a test.
+ *
+ * Some behaviour can only be pinned through the real provider: SVG extraction, the
+ * validation gate and rasterization are all inside it, and a fake that returned a
+ * pre-baked image would prove nothing about them. The upstream is still stubbed via
+ * `fetch`, so no network call and no credential is involved — only the provider's own
+ * logic is real.
+ *
+ * The caller installs the `fetch` stub, because a request-scoped mock is what makes the
+ * outgoing payload assertable.
+ */
+export function providerReturningContent(apiKey = 'test-key'): ImageProvider {
+  return new ChatProvider({
+    apiKey,
+    baseUrl: 'https://api.example.com/v1',
+    defaultModel: 'test-model',
+  });
 }
 
 /** Build a bare Express app with JSON parsing and the supplied router mounted. */

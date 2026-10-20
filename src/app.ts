@@ -18,7 +18,9 @@ export function createApp(): express.Application {
 
   if (config.server.isProduction) {
     // A fixed hop count is a deployment assumption; make it explicit.
-    app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1));
+    // Clamp to a sane range so a misconfigured value cannot be exploited.
+    const rawHops = Number(process.env.TRUST_PROXY_HOPS ?? 1);
+    app.set('trust proxy', Math.max(0, Math.min(10, Math.floor(rawHops))));
   }
 
   // ── 1. Request identity ───────────────────────────────────
@@ -35,26 +37,24 @@ export function createApp(): express.Application {
   );
 
   // ── 3. CORS ───────────────────────────────────────────────
+  // Build the allowed headers set dynamically so the configured API key header
+  // is always included, even when the operator chose a custom header name.
+  const corsAllowedHeaders = new Set([
+    'Content-Type',
+    'Authorization',
+    config.auth.apiKeyHeader,
+    // Clients that send these must not hit a CORS wall.
+    'anthropic-version',
+    'openclaw-beta',
+    'x-request-id',
+  ]);
+
   app.use(
     cors({
       origin: config.cors.origins.includes('*') ? '*' : config.cors.origins,
       methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'x-api-key',
-        // Clients that send these (Claude Code, Anthropic SDKs) must not hit a CORS wall.
-        'anthropic-version',
-        'anthropic-beta',
-        'x-request-id',
-      ],
-      exposedHeaders: [
-        'x-request-id',
-        'request-id',
-        'anthropic-ratelimit-requests-remaining',
-        'anthropic-ratelimit-requests-reset',
-        'retry-after',
-      ],
+      allowedHeaders: [...corsAllowedHeaders],
+      exposedHeaders: ['x-request-id', 'request-id', 'retry-after'],
       maxAge: 86400,
     }),
   );
@@ -98,7 +98,7 @@ export function createApp(): express.Application {
             ApiKeyAuth: {
               type: 'apiKey',
               in: 'header',
-              name: 'x-api-key',
+              name: config.auth.apiKeyHeader,
               description: 'Required when API_KEYS is set. Authorization: Bearer also works.',
             },
           },

@@ -126,16 +126,35 @@ describe('GenerationService.generate', () => {
     await expect(serviceFor([provider]).generate(req({ count: 2 }))).rejects.toBeTruthy();
   });
 
-  it('adds a note when varying seeds for a batch', async () => {
+  it('discloses that a batch is varied by compositional direction', async () => {
     const { result } = await serviceFor([new FakeProvider()]).generate(req({ count: 2 }));
-    expect(result.adaptations.notes?.some((n) => /distinct seed/i.test(n))).toBe(true);
+    expect(result.adaptations.notes?.some((n) => /distinct compositional direction/i.test(n))).toBe(
+      true,
+    );
   });
 
-  it('does not add the seed note when an explicit seed is pinned', async () => {
+  it('discloses the seed caveat when a batch pins a seed the upstream cannot honour', async () => {
     const { result } = await serviceFor([new FakeProvider()]).generate(req({ count: 2, seed: 5 }));
-    expect(result.adaptations.notes ?? []).not.toContain(
-      'each image used a distinct seed to guarantee variation',
-    );
+    expect(result.adaptations.notes?.some((n) => /cannot honour a seed/i.test(n))).toBe(true);
+  });
+
+  it('sends a distinct prompt per image so a batch cannot collapse into copies', async () => {
+    const provider = new FakeProvider();
+    await serviceFor([provider]).generate(req({ prompt: 'a red apple', count: 3 }));
+
+    const prompts = provider.calls.map((call) => call.prompt);
+    expect(prompts).toHaveLength(3);
+    // The whole point of a fan-out: three sub-jobs must not ask the same question, or an
+    // upstream that cannot take a seed returns the same drawing three times.
+    expect(new Set(prompts).size).toBe(3);
+    for (const prompt of prompts) expect(prompt).toContain('a red apple');
+  });
+
+  it('leaves a single-image request prompt untouched', async () => {
+    const provider = new FakeProvider();
+    await serviceFor([provider]).generate(req({ prompt: 'a red apple', count: 1 }));
+
+    expect(provider.calls[0].prompt).toBe('a red apple');
   });
 });
 

@@ -24,6 +24,9 @@ export default defineConfig({
       thresholds: {
         'src/engine/**': { statements: 80, branches: 70, functions: 80 },
         'src/providers/**': { statements: 60, branches: 50, functions: 60 },
+        'src/middleware/**': { statements: 80, branches: 70, functions: 80 },
+        'src/services/**': { statements: 80, branches: 70, functions: 80 },
+        'src/platform/**': { statements: 75, branches: 60, functions: 75 },
       },
     },
   },

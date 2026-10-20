@@ -14,8 +14,15 @@
  * a silent `getValidSize()` rewrite of the caller's request.
  */
 
-/** Output encodings understood by the engine. */
-export type ImageFormat = 'png' | 'jpeg' | 'webp';
+/**
+ * Output encodings understood by the engine.
+ *
+ * `svg` is a first-class member rather than an alias for PNG because it is a different kind
+ * of artifact: a document the caller can edit, scale and restyle, not a frozen raster. It
+ * must be asked for explicitly — the engine never downgrades a PNG request to SVG, because
+ * a client that expects a bitmap and receives a document has been handed the wrong thing.
+ */
+export type ImageFormat = 'png' | 'jpeg' | 'webp' | 'svg';
 
 /** How the caller wants the finished image delivered. */
 export type DeliveryMode = 'base64' | 'url';
@@ -100,6 +107,18 @@ export interface GeneratedImage {
   mime: string;
   width?: number;
   height?: number;
+  /**
+   * The source SVG document, when this image was drawn as vector markup.
+   *
+   * Carried alongside `base64` rather than replacing it, because the two answer different
+   * questions. `base64` is what the caller asked for; this is the drawing the model
+   * actually authored, kept so the artifact stays reproducible, inspectable and
+   * re-renderable at any resolution without asking the upstream to generate it again.
+   *
+   * Only ever populated after `platform/svg` has validated the document: an unvalidated
+   * SVG must not reach a caller, since it is a document a browser will execute.
+   */
+  svg?: string;
   /**
    * The prompt the provider actually used, when it differs from the request
    * (e.g. DALL·E 3 rewrites prompts). Surfacing this is how we avoid the

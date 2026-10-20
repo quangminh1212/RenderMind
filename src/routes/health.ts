@@ -60,8 +60,16 @@ function readinessPayload() {
   let engineError: string | undefined;
 
   try {
-    providers = getEngine()
-      .registry.capabilityDescriptors()
+    const engine = getEngine();
+    // Readiness asks the same question generation does — "who will this deployment
+    // actually route to?" — rather than "who is configured?". A provider the strategy
+    // forbids is not one a request can reach, so counting it would advertise a service
+    // whose every generation fails.
+    const routable = new Set(engine.generation.routableProviders().map((p) => p.name));
+
+    providers = engine.registry
+      .capabilityDescriptors(config.providerStrategy)
+      .filter((d) => routable.has(d.provider))
       .map((d) => ({
         name: d.provider,
         status: d.status,
@@ -138,10 +146,11 @@ router.get('/readyz', (_req: Request, res: Response) => {
 router.get('/', (_req: Request, res: Response) => {
   // Backwards-compatible alias: liveness semantics, with readiness detail attached so
   // existing dashboards keep working without being told the process is dead.
+  const readiness = readinessPayload();
   res.status(200).json({
     ...livenessPayload(),
-    ready: readinessPayload().status === 'ready',
-    dependencies: readinessPayload().checks,
+    ready: readiness.status === 'ready',
+    dependencies: readiness.checks,
   });
 });
 

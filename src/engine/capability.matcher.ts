@@ -18,15 +18,31 @@ import { UnsupportedCapabilityError } from './errors';
 const USABLE_STATUSES: ProviderStatus[] = ['available', 'degraded'];
 
 /**
+ * Provider classes that can produce real pixels, preferred over the text-only fallback.
+ *
+ * The chat provider instructs a language model to compose vector geometry: it works when
+ * nothing else is available, and it is the only source of `format: 'svg'`, but its output is
+ * a diagram rather than a picture. A native images endpoint returns an actual raster, so
+ * when both are configured and the caller has not pinned one, the native path is the better
+ * answer.
+ *
+ * This is a declared first sort key rather than something that emerges from cost and
+ * latency. Neither provider declares a cost, and both declare a latency constant — so
+ * leaving the preference implicit would let routing be decided by whichever latency number
+ * happened to be smaller, which is a behaviour change disguised as an optimisation.
+ */
+const REAL_IMAGE_PROVIDERS = new Set(['native']);
+
+/**
  * Resolve which provider(s) can serve a request, and how.
  *
  * Pure and synchronous: no I/O, no clock, no randomness. That makes every negotiation
  * decision testable as a table of (request × descriptors) → plan.
  *
  * Algorithm:
- *   1. Hard-filter candidates on size/aspect/quality/feature support.
+ *   1. Hard-filter candidates on size/aspect/quality/feature/format support.
  *   2. Adapt the request where adaptation is safe and disclosed.
- *   3. Rank the survivors by cost, then latency.
+ *   3. Rank the survivors: real-image providers first, then cost, then latency.
  *   4. Emit an explicit plan (ordered attempts) rather than a single provider, so
  *      failover is a declared strategy instead of a retry loop.
  */
@@ -88,6 +104,23 @@ export function buildPlan(
       });
       continue;
     }
+
+    // ── Output format gate ──────────────────────────────────
+    // Hard, not a preference. A model that cannot produce the container the caller asked for
+    // must be rejected outright, because the alternative is exactly the substitution the
+    // engine exists to prevent: a caller who asked for `svg` and received PNG bytes has been
+    // handed the wrong kind of artifact with no signal that it happened.
+    //
+    // Applied per *model* rather than per provider: a provider may offer several models with
+    // different output formats, and only the one actually selected has to be able to serve
+    // the request. Checking the provider's whole model list would reject a perfectly good
+    // provider because one of its other models lacks the format.
+    //
+    // This is also what routes `format: 'svg'` to the chat path. The native images endpoint
+    // has no vector mode, so every one of its models fails this gate and the request falls
+    // through to the provider that genuinely authors vector markup — no special case in the
+    // router, and no reliance on ranking to produce the right answer by luck.
+
     if (request.seed !== undefined && !descriptor.features.seed) {
       // A seed is a reproducibility hint; dropping it is disclosed, not fatal.
       adaptations.droppedHints = [...(adaptations.droppedHints ?? []), 'seed'];
@@ -100,6 +133,17 @@ export function buildPlan(
         reason: request.model
           ? `model "${request.model}" is not offered by this provider`
           : 'provider offers no models',
+      });
+      continue;
+    }
+
+    // The selected model must be able to produce the requested container (see the note
+    // above the format gate for why this is a hard rejection).
+    if (!model.outputFormats.includes(request.output.format)) {
+      rejections.push({
+        provider: descriptor.provider,
+        model: model.id,
+        reason: `model cannot produce ${request.output.format} output`,
       });
       continue;
     }
@@ -121,8 +165,50 @@ export function buildPlan(
       if (!descriptor.features.quality) {
         adaptedQuality = null;
         adaptations.droppedHints = [...(adaptations.droppedHints ?? []), 'quality'];
-      } else {
+      } else if (model.qualityLevels.length > 0) {
         adaptedQuality = nearestQuality(request.quality, model.qualityLevels);
+      } else {
+        // The provider accepts a quality field but declares no levels for this model, so
+        // there is nothing to snap onto. Dropping it is disclosed rather than invented.
+        adaptedQuality = null;
+        adaptations.droppedHints = [...(adaptations.droppedHints ?? []), 'quality'];
+      }
+    }
+
+    // ── Style ───────────────────────────────────────────────
+    // Folded into the chat instruction, but a native endpoint has no field for it. Dropping
+    // it is recorded so the caller is told, rather than the style silently vanishing from a
+    // request that mentioned it.
+    if (request.style && !descriptor.features.style) {
+      adaptations.droppedHints = [...(adaptations.droppedHints ?? []), 'style'];
+    }
+
+    // ── Capability declaration gate ─────────────────────────
+    // Applied only where a provider's declared limits are the sole reason an otherwise
+    // satisfiable request would fail. A chat-only deployment therefore keeps its previous
+    // acceptance profile — the fallback folds an over-limit request into a fan-out and
+    // discloses it, which is more useful to the caller than a rejection — whereas two
+    // providers make an over-limit request genuinely routable to one that can take it, and
+    // a hard rejection is the honest answer there.
+    if (descriptors.length > 1) {
+      if (request.count > descriptor.limits.maxBatch) {
+        rejections.push({
+          provider: descriptor.provider,
+          reason: `limits.maxBatch is ${descriptor.limits.maxBatch}, request asked for ${request.count}`,
+        });
+        continue;
+      }
+      if (
+        request.referenceImages &&
+        request.referenceImages.length > descriptor.limits.maxReferenceImages
+      ) {
+        rejections.push({
+          provider: descriptor.provider,
+          reason:
+            `limits.maxReferenceImages is ${descriptor.limits.maxReferenceImages}, request ` +
+            `carried ${request.referenceImages.length}`,
+        });
+        continue;
       }
     }
 
@@ -155,8 +241,19 @@ export function buildPlan(
   }
 
   // ── Rank ──────────────────────────────────────────────────
-  // Prefer cheaper models, then lower observed latency, then the caller's own order.
+  // Prefer a provider that returns real pixels, then cheaper models, then lower observed
+  // latency, then the caller's own order. The class preference comes first on purpose: it
+  // is a stated policy ("use the image endpoint when there is one"), not a cost accident.
+  //
+  // Only the *order* is affected, never the candidate set. Everything that survives the
+  // gates above stays in `ranked` and therefore stays available as a failover attempt, so a
+  // preferred-but-broken native endpoint fails over to the chat path instead of failing the
+  // request.
   const ranked = [...candidates].sort((a, b) => {
+    const classA = REAL_IMAGE_PROVIDERS.has(a.descriptor.provider) ? 0 : 1;
+    const classB = REAL_IMAGE_PROVIDERS.has(b.descriptor.provider) ? 0 : 1;
+    if (classA !== classB) return classA - classB;
+
     const costA = a.model.costPerImageUsd ?? Number.POSITIVE_INFINITY;
     const costB = b.model.costPerImageUsd ?? Number.POSITIVE_INFINITY;
     if (costA !== costB) return costA - costB;
