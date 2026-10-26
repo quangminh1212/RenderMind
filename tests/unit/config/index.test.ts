@@ -19,7 +19,7 @@ describe('loadConfig', () => {
   it('returns correct defaults for test environment', () => {
     const config = loadConfig({ NODE_ENV: 'test' } as NodeJS.ProcessEnv);
 
-    expect(config.server.port).toBe(3000);
+    expect(config.server.port).toBe(3002);
     expect(config.server.host).toBe('0.0.0.0');
     expect(config.server.nodeEnv).toBe('test');
     expect(config.server.isProduction).toBe(false);

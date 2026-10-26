@@ -92,7 +92,7 @@ const booleanish = (defaultValue: boolean) =>
 
 const envSchema = z.object({
   NODE_ENV: z.string().default('development'),
-  PORT: positiveInt('PORT').transform((v) => v ?? 3000),
+  PORT: positiveInt('PORT').transform((v) => v ?? 3002),
   HOST: z.string().default('0.0.0.0'),
 
   API_KEYS: csvList,

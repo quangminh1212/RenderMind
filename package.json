@@ -16,7 +16,7 @@
     "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
     "typecheck": "tsc --noEmit",
     "docker:build": "docker build -t rendermind .",
-    "docker:run": "docker run -p 3000:3000 --env-file .env rendermind",
+    "docker:run": "docker run -p 3002:3002 --env-file .env rendermind",
     "verify": "pnpm run typecheck && pnpm run lint && pnpm test"
   },
   "keywords": [

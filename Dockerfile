@@ -37,14 +37,14 @@ COPY --from=builder /app/dist ./dist
 COPY package.json ./
 
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=3002
 
 # Liveness only. Readiness (/readyz) depends on provider configuration and must
 # not gate the container's own health, or a Redis-less deployment gets restarted.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3002)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-EXPOSE 3000
+EXPOSE 3002
 
 USER rendermind
 

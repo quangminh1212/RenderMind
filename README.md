@@ -63,20 +63,20 @@ draw. RenderMind is the adapter that makes that work, and it is built around one
     cp .env.example .env
     pnpm run dev
 
-The service listens on port 3000. Verify it:
+The service listens on port 3002. Verify it:
 
-    curl http://localhost:3000/healthz   # liveness, always 200
-    curl http://localhost:3000/readyz    # readiness, 200 when a provider is configured
+    curl http://localhost:3002/healthz   # liveness, always 200
+    curl http://localhost:3002/readyz    # readiness, 200 when a provider is configured
 
 ### Generate an image
 
-    curl -X POST http://localhost:3000/chat \
+    curl -X POST http://localhost:3002/chat \
       -H 'Content-Type: application/json' \
       -d '{"prompt":"a red apple on a wooden table","size":"1024x1024"}'
 
 With input images:
 
-    curl -X POST http://localhost:3000/vision \
+    curl -X POST http://localhost:3002/vision \
       -H 'Content-Type: application/json' \
       -d '{
         "prompt":"repaint this in watercolour",
@@ -139,7 +139,7 @@ off by default, bounded at `5`, and never changes an image that already passed: 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | 3000 | Listen port |
+| `PORT` | 3002 | Listen port |
 | `NODE_ENV` | development | Set to `production` for strict mode |
 | `API_KEYS` | none | Required in production |
 | `CORS_ORIGINS` | `*` outside production | Allowed origins |
